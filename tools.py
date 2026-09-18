@@ -1,86 +1,342 @@
-"""
-NOVA ke tools — yeh woh actual "kaam" hain jo NOVA kar sakta hai.
-Naya tool add karna ho to: (1) yahan ek function likho, (2) tools.py ke
-TOOLS dictionary mein register karo, (3) main.py ke system prompt mein
-uska naam aur use bata do.
-"""
-
-import subprocess
+﻿import subprocess
 import platform
 import datetime
 import urllib.request
 import urllib.parse
 import json
+import os
+import webbrowser
+import time
+
+try:
+    import pyautogui
+    _PYAUTOGUI = True
+except Exception:
+    _PYAUTOGUI = False
+
+try:
+    import mss
+    _MSS = True
+except Exception:
+    _MSS = False
 
 
 def get_time(_args=None):
-    """Abhi ka time batata hai."""
     now = datetime.datetime.now()
-    return f"Abhi time hai: {now.strftime('%I:%M %p')}"
+    return f"Abhi time hai {now.strftime('%I:%M %p')}"
 
 
 def get_weather(args):
-    """
-    Open-Meteo (free, no API key chahiye) se weather laata hai.
-    args = {"city": "Jaipur"}
-    """
     city = args.get("city", "Jaipur")
-
     try:
-        # Step 1: city ka lat/long nikalo (free geocoding API)
-        geo_url = (
-            "https://geocoding-api.open-meteo.com/v1/search"
-            f"?name={urllib.parse.quote(city)}&count=1"
-        )
+        geo_url = "https://geocoding-api.open-meteo.com/v1/search?name=" + urllib.parse.quote(city) + "&count=1"
         with urllib.request.urlopen(geo_url, timeout=10) as resp:
             geo_data = json.loads(resp.read())
-
         if not geo_data.get("results"):
-            return f"'{city}' ka location nahi mila."
-
+            return f"{city} ka location nahi mila."
         lat = geo_data["results"][0]["latitude"]
         lon = geo_data["results"][0]["longitude"]
-
-        # Step 2: us location ka weather nikalo
-        weather_url = (
-            "https://api.open-meteo.com/v1/forecast"
-            f"?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code"
-        )
+        weather_url = "https://api.open-meteo.com/v1/forecast?latitude=" + str(lat) + "&longitude=" + str(lon) + "&current=temperature_2m"
         with urllib.request.urlopen(weather_url, timeout=10) as resp:
             weather_data = json.loads(resp.read())
-
         temp = weather_data["current"]["temperature_2m"]
-        return f"{city} mein abhi temperature hai {temp}°C"
-
+        return f"{city} mein abhi {temp} degree C hai."
     except Exception as e:
         return f"Weather nahi mil paaya: {e}"
 
 
-def open_app(args):
-    """
-    App/program open karta hai.
-    args = {"app_name": "chrome"}
-    NOTE: yeh sirf tumhare apne computer ke liye hai, jahan yeh naam
-    system mein install/available ho.
-    """
-    app_name = args.get("app_name", "").lower().strip()
-    system = platform.system()
+_HOME = os.path.expanduser("~")
 
+WEBSITES = {
+    "youtube": "https://youtube.com",
+    "google": "https://google.com",
+    "gmail": "https://mail.google.com",
+    "email": "https://mail.google.com",
+    "facebook": "https://facebook.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "instagram": "https://instagram.com",
+    "twitter": "https://twitter.com",
+    "x": "https://twitter.com",
+    "amazon": "https://amazon.in",
+    "spotify": "https://open.spotify.com",
+    "chatgpt": "https://chat.openai.com",
+    "claude": "https://claude.ai",
+    "github": "https://github.com",
+}
+
+FOLDERS = {
+    "downloads": os.path.join(_HOME, "Downloads"),
+    "download": os.path.join(_HOME, "Downloads"),
+    "documents": os.path.join(_HOME, "Documents"),
+    "document": os.path.join(_HOME, "Documents"),
+    "desktop": os.path.join(_HOME, "Desktop"),
+    "pictures": os.path.join(_HOME, "Pictures"),
+    "photos": os.path.join(_HOME, "Pictures"),
+    "screenshots": os.path.join(_HOME, "Pictures", "Screenshots"),
+    "music": os.path.join(_HOME, "Music"),
+    "videos": os.path.join(_HOME, "Videos"),
+}
+
+APP_PATHS = {
+    "vlc": [
+        "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
+        "C:\\Program Files (x86)\\VideoLAN\\VLC\\vlc.exe",
+    ],
+    "code": [
+        os.path.join(_HOME, "AppData", "Local", "Programs", "Microsoft VS Code", "Code.exe"),
+        "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+    ],
+}
+
+APP_ALIASES = {
+    "chrome": "chrome", "browser": "chrome", "edge": "msedge",
+    "firefox": "firefox", "notepad": "notepad", "calculator": "calc",
+    "calc": "calc", "paint": "mspaint", "file explorer": "explorer",
+    "files": "explorer", "explorer": "explorer", "settings": "ms-settings:",
+    "control panel": "control", "task manager": "taskmgr", "terminal": "wt",
+    "command prompt": "cmd", "cmd": "cmd", "word": "winword",
+    "excel": "excel", "powerpoint": "powerpnt", "vlc": "vlc",
+    "code": "code", "vs code": "code", "vscode": "code",
+    "visual studio code": "code", "camera": "microsoft.windows.camera:",
+}
+
+
+def _normalize(text):
+    s = text.lower().strip()
+    fillers = ["kholo", "khol do", "khol", "open karo", "open", "karo",
+               "chalao", "chala do", "start karo", "folder", "app",
+               "application", "please", "zara", "thoda", "mera", "meri",
+               "ko", "ka", "ki", "do", "de", "dedo", "dikhao", "dikha"]
+    for f in fillers:
+        s = s.replace(f, " ")
+    return " ".join(s.split())
+
+
+def _find_in(target_dict, text):
+    words = set(text.split())
+    for key in target_dict:
+        if key in words:
+            return key
+    for key in target_dict:
+        if key in text:
+            return key
+    return None
+
+
+def _launch_windows(name):
+    if name.startswith("ms-"):
+        try:
+            os.startfile(name)
+            return True
+        except Exception:
+            return False
+    if name in APP_PATHS:
+        for path in APP_PATHS[name]:
+            if os.path.exists(path):
+                subprocess.Popen([path])
+                return True
     try:
-        if system == "Windows":
-            subprocess.Popen(["start", app_name], shell=True)
-        elif system == "Darwin":  # macOS
-            subprocess.Popen(["open", "-a", app_name])
-        else:  # Linux
-            subprocess.Popen([app_name])
-        return f"{app_name} khol raha hoon..."
+        os.startfile(name)
+        return True
+    except Exception:
+        return False
+
+
+def open_app(args):
+    raw = args.get("app_name", "")
+    if not raw:
+        return "Kaunsa app kholna hai?"
+    name = _normalize(raw)
+    print(f"[open_app] raw={raw} cleaned={name}")
+
+    key = _find_in(FOLDERS, name)
+    if key:
+        path = FOLDERS[key]
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+        try:
+            os.startfile(path)
+            return f"{key} folder khol raha hoon..."
+        except Exception as e:
+            return f"{key} folder nahi khula: {e}"
+
+    key = _find_in(WEBSITES, name)
+    if key:
+        webbrowser.open(WEBSITES[key])
+        return f"{key} khol raha hoon..."
+
+    key = _find_in(APP_ALIASES, name)
+    exe = APP_ALIASES.get(key, name) if key else name
+
+    if platform.system() == "Windows":
+        if _launch_windows(exe):
+            return f"{name} khol raha hoon..."
+        return f"{name} nahi mila."
+    return f"{name} nahi mila."
+
+
+def take_screenshot(_args=None):
+    if not _MSS:
+        return "Screenshot ke liye: pip install mss"
+    try:
+        folder = os.path.join(_HOME, "Pictures", "Screenshots")
+        os.makedirs(folder, exist_ok=True)
+        fname = "screenshot_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + ".png"
+        path = os.path.join(folder, fname)
+        with mss.mss() as sct:
+            sct.shot(output=path)
+        os.startfile(folder)
+        return f"Screenshot le liya."
     except Exception as e:
-        return f"{app_name} open nahi kar paaya: {e}"
+        return f"Screenshot fail: {e}"
 
 
-# Yeh dictionary main.py isse use karega tool ka naam se function dhoondne ke liye
+def open_screenshots(_args=None):
+    folder = os.path.join(_HOME, "Pictures", "Screenshots")
+    if not os.path.exists(folder):
+        os.makedirs(folder, exist_ok=True)
+    try:
+        os.startfile(folder)
+        return "Screenshots folder khol raha hoon."
+    except Exception as e:
+        return f"Folder nahi khula: {e}"
+
+
+def play_youtube(args):
+    query = args.get("query", "").strip()
+    if not query:
+        webbrowser.open("https://youtube.com")
+        return "YouTube khol raha hoon."
+    url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
+    webbrowser.open(url)
+    return f"YouTube pe {query} search kar raha hoon."
+
+
+def _press_key(key, times=1):
+    if not _PYAUTOGUI:
+        return False
+    for _ in range(times):
+        pyautogui.press(key)
+        time.sleep(0.05)
+    return True
+
+
+def volume_up(args):
+    n = int(args.get("steps", 5))
+    if _press_key("volumeup", n):
+        return f"Volume {n} step badha diya."
+    return "pyautogui chahiye."
+
+
+def volume_down(args):
+    n = int(args.get("steps", 5))
+    if _press_key("volumedown", n):
+        return f"Volume {n} step kam kar diya."
+    return "pyautogui chahiye."
+
+
+def volume_mute(_args=None):
+    if _press_key("volumemute"):
+        return "Mute kar diya."
+    return "pyautogui chahiye."
+
+
+def lock_pc(_args=None):
+    try:
+        if platform.system() == "Windows":
+            import ctypes
+            ctypes.windll.user32.LockWorkStation()
+            return "PC lock kar diya."
+    except Exception as e:
+        return f"Lock fail: {e}"
+    return "Sirf Windows pe."
+
+
+def shutdown_pc(args):
+    mode = args.get("mode", "shutdown")
+    try:
+        if platform.system() != "Windows":
+            return "Sirf Windows pe."
+        if mode == "restart":
+            os.system("shutdown /r /t 10")
+            return "10 second mein restart ho raha hai."
+        if mode == "cancel":
+            os.system("shutdown /a")
+            return "Cancel kar diya."
+        os.system("shutdown /s /t 10")
+        return "10 second mein shutdown. Cancel karne ke liye bolo."
+    except Exception as e:
+        return f"Fail: {e}"
+
+
+def copy_to_clipboard(args):
+    text = args.get("text", "")
+    try:
+        subprocess.run("clip", input=text.encode("utf-8"), shell=True, check=True)
+        return "Clipboard mein copy kar diya."
+    except Exception as e:
+        return f"Copy fail: {e}"
+
+
+def type_text(args):
+    text = args.get("text", "")
+    if not _PYAUTOGUI:
+        return "pyautogui chahiye."
+    try:
+        time.sleep(1)
+        pyautogui.typewrite(text, interval=0.03)
+        return "Type kar diya."
+    except Exception as e:
+        return f"Typing fail: {e}"
+
+
+def search_file(args):
+    name = args.get("name", "").strip().lower()
+    where = args.get("where", "downloads").lower()
+    if not name:
+        return "Kaunsi file dhundhni hai?"
+    root = FOLDERS.get(where, os.path.join(_HOME, "Downloads"))
+    matches = []
+    try:
+        for dirpath, _, files in os.walk(root):
+            for f in files:
+                if name in f.lower():
+                    matches.append(os.path.join(dirpath, f))
+                    if len(matches) >= 5:
+                        break
+            if len(matches) >= 5:
+                break
+    except Exception as e:
+        return f"Search fail: {e}"
+    if not matches:
+        return f"{name} naam ki file nahi mili {where} mein."
+    parent = os.path.dirname(matches[0])
+    os.startfile(parent)
+    return f"{len(matches)} file mili. Pehli: {os.path.basename(matches[0])}"
+
+
+def web_search(args):
+    q = args.get("query", "").strip()
+    if not q:
+        return "Kya search karna hai?"
+    webbrowser.open("https://www.google.com/search?q=" + urllib.parse.quote(q))
+    return f"Google pe {q} search kar raha hoon."
+
+
 TOOLS = {
     "get_time": get_time,
     "get_weather": get_weather,
     "open_app": open_app,
+    "take_screenshot": take_screenshot,
+    "open_screenshots": open_screenshots,
+    "play_youtube": play_youtube,
+    "volume_up": volume_up,
+    "volume_down": volume_down,
+    "volume_mute": volume_mute,
+    "lock_pc": lock_pc,
+    "shutdown_pc": shutdown_pc,
+    "copy_to_clipboard": copy_to_clipboard,
+    "type_text": type_text,
+    "search_file": search_file,
+    "web_search": web_search,
 }

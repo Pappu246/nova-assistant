@@ -1,75 +1,83 @@
-"""
-NOVA ka "dimaag" — Ollama (local, free LLM) ko sawal bhejta hai aur
-decide karwata hai ki normal jawab dena hai ya koi tool (function) use
-karna hai.
-
-Setup (ek baar karna hai):
-    1. https://ollama.com se Ollama install karo
-    2. Terminal mein: ollama pull llama3.1
-    3. pip install ollama
-"""
-
-import json
+﻿import json
 import ollama
 from tools import TOOLS
 
 MODEL_NAME = "llama3.1"
 
-SYSTEM_PROMPT = """Tum NOVA ho, ek helpful voice/text assistant, jaise Iron Man ka Jarvis.
+SYSTEM_PROMPT = """Tum NOVA ho, Iron Man ke Jarvis jaisa personal assistant.
 
-Tumhare paas yeh tools available hain:
-- get_time: abhi ka time batata hai. Args: koi nahi.
-- get_weather: kisi city ka weather batata hai. Args: {"city": "<city_name>"}
-- open_app: koi application/program kholta hai. Args: {"app_name": "<app_name>"}
+HAMESHA sirf ek JSON object return karo:
+{"tool": "<tool_name ya none>", "args": {}, "reply": "<text>"}
 
-Jab user ka sawal in tools se solve ho sakta hai, sirf yeh JSON return karo
-(kuch aur text nahi, sirf JSON):
-{"tool": "<tool_name>", "args": {...}}
+Tools:
+1. get_time - Args: {}
+2. get_weather - Args: {"city": "Jaipur"}
+3. open_app - Args: {"app_name": "chrome"}
+4. take_screenshot - Args: {}
+5. open_screenshots - Args: {}
+6. play_youtube - Args: {"query": "song name"}
+7. volume_up - Args: {"steps": 5}
+8. volume_down - Args: {"steps": 5}
+9. volume_mute - Args: {}
+10. lock_pc - Args: {}
+11. shutdown_pc - Args: {"mode": "shutdown" or "restart" or "cancel"}
+12. copy_to_clipboard - Args: {"text": "..."}
+13. type_text - Args: {"text": "..."}
+14. search_file - Args: {"name": "photo", "where": "downloads"}
+15. web_search - Args: {"query": "..."}
 
-Agar tool ki zaroorat nahi hai (normal baat-cheet, sawal-jawab), to sirf
-normal Hindi/Hinglish mein reply do, JSON mat do.
+Rules:
+- Command match kare to tool mein naam, args bharo, reply khaali rakho.
+- Normal baat-cheet ho to tool none, args {}, reply mein Hinglish jawab.
+- screenshot lo - take_screenshot
+- screenshot dikhao - open_screenshots
+- X gaana bajao - play_youtube
+- volume badhao kam mute - volume_up down mute
+- PC band restart lock - shutdown_pc lock_pc
+- downloads mein X dhundho - search_file
+- google pe X search - web_search
+- Hinglish mein chhota jawab.
 """
 
 
 def ask_nova(user_message, history=None):
-    """
-    user_message: user ne kya bola
-    history: pichli conversation (list of {"role":..., "content":...})
-    Return: NOVA ka final jawab (string)
-    """
     if history is None:
         history = []
-
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history)
     messages.append({"role": "user", "content": user_message})
 
-    response = ollama.chat(model=MODEL_NAME, messages=messages)
-    reply = response["message"]["content"].strip()
-
-    # Check karo ki LLM ne tool call maanga hai ya normal reply diya hai
-    tool_call = _try_parse_tool_call(reply)
-
-    if tool_call:
-        tool_name = tool_call.get("tool")
-        args = tool_call.get("args", {})
-
-        if tool_name in TOOLS:
-            result = TOOLS[tool_name](args)
-            return result
-        else:
-            return f"Mujhe '{tool_name}' naam ka tool nahi pata."
-
-    # Tool call nahi tha — seedha LLM ka reply hi final jawab hai
-    return reply
-
-
-def _try_parse_tool_call(text):
-    """Agar LLM ka reply valid tool-call JSON hai to dict return karo, warna None."""
     try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict) and "tool" in parsed:
-            return parsed
+        response = ollama.chat(
+            model=MODEL_NAME,
+            messages=messages,
+            format="json",
+        )
+        raw = response["message"]["content"].strip()
+    except Exception as e:
+        return f"Ollama se baat nahi ho paayi: {e}"
+
+    parsed = _safe_parse(raw)
+    if parsed is None:
+        return raw
+
+    tool_name = parsed.get("tool", "none")
+    if tool_name and tool_name != "none" and tool_name in TOOLS:
+        args = parsed.get("args", {}) or {}
+        try:
+            return TOOLS[tool_name](args)
+        except Exception as e:
+            return f"Tool {tool_name} fail hua: {e}"
+
+    reply = parsed.get("reply", "").strip()
+    return reply if reply else "Samajh nahi paya, dobara bolo."
+
+
+def _safe_parse(text):
+    try:
+        p = json.loads(text)
+        if isinstance(p, dict):
+            return p
     except (json.JSONDecodeError, ValueError):
         pass
     return None
