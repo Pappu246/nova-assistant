@@ -20,6 +20,12 @@ try:
 except Exception:
     _MSS = False
 
+try:
+    import yt_dlp
+    _YTDLP = True
+except Exception:
+    _YTDLP = False
+
 
 def get_time(_args=None):
     now = datetime.datetime.now()
@@ -97,7 +103,7 @@ APP_ALIASES = {
     "command prompt": "cmd", "cmd": "cmd", "word": "winword",
     "excel": "excel", "powerpoint": "powerpnt", "vlc": "vlc",
     "code": "code", "vs code": "code", "vscode": "code",
-    "visual studio code": "code", "camera": "microsoft.windows.camera:",
+    "visual studio code": "code",
 }
 
 
@@ -203,13 +209,75 @@ def open_screenshots(_args=None):
 
 
 def play_youtube(args):
+    """Simple YouTube - search + first video URL open (fast)."""
     query = args.get("query", "").strip()
     if not query:
         webbrowser.open("https://youtube.com")
         return "YouTube khol raha hoon."
-    url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
+
+    if not _YTDLP:
+        url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
+        webbrowser.open(url)
+        return f"YouTube pe {query} search kar raha hoon."
+
+    try:
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "default_search": "ytsearch1",
+            "skip_download": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if info and info.get("entries"):
+                first = info["entries"][0]
+                video_id = first.get("id")
+                title = first.get("title", query)
+                if video_id:
+                    url = f"https://www.youtube.com/watch?v={video_id}"
+                    webbrowser.open(url)
+                    return f"'{title}' baja raha hoon."
+        url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
+        webbrowser.open(url)
+        return f"YouTube pe {query} search kar raha hoon."
+    except Exception as e:
+        print(f"[youtube fail] {e}")
+        url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote(query)
+        webbrowser.open(url)
+        return f"YouTube pe {query} search kar raha hoon."
+
+
+def browse(args):
+    """Full browser agent - Gemini + browser-use."""
+    task = args.get("task", "").strip()
+    if not task:
+        return "Boss, kya karna hai browser mein?"
+    try:
+        from browser_agent import browse as _browse
+        return _browse({"task": task})
+    except Exception as e:
+        return f"Browser agent fail: {e}"
+
+
+def play_spotify(args):
+    query = args.get("query", "").strip()
+    if not query:
+        webbrowser.open("https://open.spotify.com")
+        return "Spotify khol raha hoon."
+    url = "https://open.spotify.com/search/" + urllib.parse.quote(query)
     webbrowser.open(url)
-    return f"YouTube pe {query} search kar raha hoon."
+    time.sleep(4)
+    if _PYAUTOGUI:
+        try:
+            time.sleep(1)
+            for _ in range(3):
+                pyautogui.press("tab")
+                time.sleep(0.2)
+            pyautogui.press("enter")
+            return f"Spotify pe {query} play kar raha hoon."
+        except Exception as e:
+            print(f"[spotify click fail] {e}")
+    return f"Spotify pe {query} search kar diya."
 
 
 def _press_key(key, times=1):
@@ -238,6 +306,24 @@ def volume_down(args):
 def volume_mute(_args=None):
     if _press_key("volumemute"):
         return "Mute kar diya."
+    return "pyautogui chahiye."
+
+
+def next_track(_args=None):
+    if _press_key("nexttrack"):
+        return "Agla gaana."
+    return "pyautogui chahiye."
+
+
+def prev_track(_args=None):
+    if _press_key("prevtrack"):
+        return "Pichla gaana."
+    return "pyautogui chahiye."
+
+
+def play_pause(_args=None):
+    if _press_key("playpause"):
+        return "Play/Pause toggle kiya."
     return "pyautogui chahiye."
 
 
@@ -330,9 +416,14 @@ TOOLS = {
     "take_screenshot": take_screenshot,
     "open_screenshots": open_screenshots,
     "play_youtube": play_youtube,
+    "browse": browse,
+    "play_spotify": play_spotify,
     "volume_up": volume_up,
     "volume_down": volume_down,
     "volume_mute": volume_mute,
+    "next_track": next_track,
+    "prev_track": prev_track,
+    "play_pause": play_pause,
     "lock_pc": lock_pc,
     "shutdown_pc": shutdown_pc,
     "copy_to_clipboard": copy_to_clipboard,
