@@ -1,4 +1,4 @@
-# NOVA — Personal AI Assistant (Jarvis-inspired)
+﻿# NOVA â€” Personal AI Assistant (Jarvis-inspired)
 
 100% free stack: local LLM (Ollama) + free weather API. Voice (STT/TTS)
 Phase 2 mein add hoga.
@@ -25,9 +25,9 @@ Phase 2 mein add hoga.
 ## Abhi kya kaam karta hai (Phase 1)
 
 - Normal text conversation (Hindi/Hinglish/English)
-- "Time batao" → abhi ka time
-- "Jaipur mein weather kaisa hai" → live weather
-- "Chrome khol do" → app open karta hai (tumhare computer pe jo installed ho)
+- "Time batao" â†’ abhi ka time
+- "Jaipur mein weather kaisa hai" â†’ live weather
+- "Chrome khol do" â†’ app open karta hai (tumhare computer pe jo installed ho)
 
 ## Roadmap
 
@@ -35,15 +35,15 @@ Phase 2 mein add hoga.
 - [ ] Phase 2: Speech-to-Text (Whisper) add karna
 - [ ] Phase 3: Text-to-Speech (pyttsx3 / Coqui) add karna
 - [ ] Phase 4: Wake word ("Hey NOVA") add karna
-- [ ] Phase 5: Aur tools — calendar, reminders, file search
+- [ ] Phase 5: Aur tools â€” calendar, reminders, file search
 
 ## Project Structure
 
 ```
 nova/
-├── main.py          # Entry point, chat loop
-├── brain.py         # LLM (Ollama) ke saath baat-cheet + tool-call decision
-├── tools.py          # Actual functions jo NOVA execute karta hai
-├── requirements.txt
-└── README.md
+â”œâ”€â”€ main.py          # Entry point, chat loop
+â”œâ”€â”€ brain.py         # LLM (Ollama) ke saath baat-cheet + tool-call decision
+â”œâ”€â”€ tools.py          # Actual functions jo NOVA execute karta hai
+â”œâ”€â”€ requirements.txt
+â””â”€â”€ README.md
 ```
