@@ -8,8 +8,8 @@ import time as _time
 import numpy as np
 
 # ============ CONFIG ============
-EDGE_VOICE = "en-US-EmmaMultilingualNeural"   # Female, ultra natural
-EDGE_RATE = "+0%"
+EDGE_VOICE = "hi-IN-MadhurNeural"   # Female, ultra natural
+EDGE_RATE = "+5%"
 EDGE_PITCH = "+0Hz"
 # ================================
 
