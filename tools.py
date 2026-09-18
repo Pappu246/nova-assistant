@@ -9,6 +9,15 @@ import webbrowser
 import time
 
 try:
+    from memory import tool_remember, tool_recall, tool_forget, tool_note, tool_list_notes
+except Exception:
+    def tool_remember(a): return 'Memory load nahi hui.'
+    def tool_recall(a): return 'Memory load nahi hui.'
+    def tool_forget(a): return 'Memory load nahi hui.'
+    def tool_note(a): return 'Memory load nahi hui.'
+    def tool_list_notes(a): return 'Memory load nahi hui.'
+
+try:
     import pyautogui
     _PYAUTOGUI = True
 except Exception:
@@ -409,6 +418,32 @@ def web_search(args):
     return f"Google pe {q} search kar raha hoon."
 
 
+def close_browser(_args=None):
+    """Chromium browser ko band karo (jab user bole)."""
+    try:
+        import subprocess
+        if platform.system() == "Windows":
+            # Sirf browser-use ka chromium band karo
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "chrome.exe", "/FI", "WINDOWTITLE eq *"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # Chromium bhi try
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "chromium.exe"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return "Browser band kar diya."
+    except Exception as e:
+        return f"Browser band nahi hua: {e}"
+    return "Sirf Windows pe."
+
+
+
 TOOLS = {
     "get_time": get_time,
     "get_weather": get_weather,
@@ -417,6 +452,7 @@ TOOLS = {
     "open_screenshots": open_screenshots,
     "play_youtube": play_youtube,
     "browse": browse,
+    "close_browser": close_browser,
     "play_spotify": play_spotify,
     "volume_up": volume_up,
     "volume_down": volume_down,
@@ -430,4 +466,9 @@ TOOLS = {
     "type_text": type_text,
     "search_file": search_file,
     "web_search": web_search,
+    "remember": tool_remember,
+    "recall": tool_recall,
+    "forget": tool_forget,
+    "note": tool_note,
+    "list_notes": tool_list_notes,
 }

@@ -1,5 +1,5 @@
 ﻿"""
-NOVA ki awaaz - Groq Orpheus TTS + edge-tts fallback.
+NOVA ki awaaz - edge-tts Ava (female multilingual) + fallbacks.
 """
 import os
 import tempfile
@@ -8,23 +8,10 @@ import time as _time
 import numpy as np
 
 # ============ CONFIG ============
-VOICE = "leah"   # Orpheus voices
-# Options:
-#   tara  - female, natural
-#   leah  - female, warm
-#   jess  - female, expressive
-#   mia   - female, soft
-#   zoe   - female, bright
-#   leo   - male, calm
-#   dan   - male, deep (JARVIS feel)
-#   zac   - male, energetic
+EDGE_VOICE = "en-US-EmmaMultilingualNeural"   # Female, ultra natural
+EDGE_RATE = "+0%"
+EDGE_PITCH = "+0Hz"
 # ================================
-
-try:
-    from groq import Groq
-    _GROQ = True
-except Exception:
-    _GROQ = False
 
 try:
     from playsound3 import playsound
@@ -61,34 +48,12 @@ def _play_file(path):
     return False
 
 
-def _groq_tts(text, path):
-    if not _GROQ:
-        return False
-    key = os.environ.get("GROQ_API_KEY")
-    if not key:
-        print("[groq] API key nahi mili")
-        return False
-    try:
-        client = Groq(api_key=key)
-        response = client.audio.speech.create(
-            model="canopylabs/orpheus-v1-english",
-            voice=VOICE,
-            input=text,
-            response_format="wav",
-        )
-        response.write_to_file(path)
-        return os.path.exists(path) and os.path.getsize(path) > 1000
-    except Exception as e:
-        print(f"[groq tts fail] {str(e)[:150]}")
-        return False
-
-
 def _edge_tts(text, path):
     try:
         import edge_tts, asyncio
         async def _gen():
-            c = edge_tts.Communicate(text, "en-US-AndrewMultilingualNeural",
-                                     rate="+0%", pitch="+0Hz")
+            c = edge_tts.Communicate(text, EDGE_VOICE,
+                                     rate=EDGE_RATE, pitch=EDGE_PITCH)
             await c.save(path)
         asyncio.run(_gen())
         return os.path.exists(path) and os.path.getsize(path) > 500
@@ -121,7 +86,7 @@ def _cleanup_old():
     try:
         td = tempfile.gettempdir()
         for f in os.listdir(td):
-            if f.startswith("nova_voice_") and (f.endswith(".wav") or f.endswith(".mp3")):
+            if f.startswith("nova_voice_"):
                 try:
                     os.remove(os.path.join(td, f))
                 except Exception:
@@ -141,21 +106,9 @@ def speak(text):
     _cleanup_old()
     ts = int(_time.time() * 1000)
 
-    # Try 1: Groq Orpheus
-    wav_path = os.path.join(tempfile.gettempdir(), f"nova_voice_{ts}.wav")
-    if _groq_tts(text, wav_path):
-        print("[voice] Groq Orpheus")
-        if _play_file(wav_path):
-            try:
-                os.remove(wav_path)
-            except Exception:
-                pass
-            return
-
-    # Try 2: edge-tts (multilingual neural - natural)
     mp3_path = os.path.join(tempfile.gettempdir(), f"nova_voice_{ts}.mp3")
     if _edge_tts(text, mp3_path):
-        print("[voice] edge-tts multilingual")
+        print(f"[voice] edge-tts {EDGE_VOICE}")
         if _play_file(mp3_path):
             try:
                 os.remove(mp3_path)
@@ -163,5 +116,4 @@ def speak(text):
                 pass
             return
 
-    # Try 3: SAPI5
     _sapi(text)

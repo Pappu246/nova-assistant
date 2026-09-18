@@ -1,4 +1,7 @@
-﻿import time
+﻿"""
+NOVA ke kaan - turant detect, fast transcribe.
+"""
+import time
 import sounddevice as sd
 import numpy as np
 from scipy.io.wavfile import write as write_wav
@@ -7,11 +10,13 @@ import tempfile
 import os
 
 SAMPLE_RATE = 16000
-RECORD_SECONDS = 6
 CALIB_SECONDS = 2
+MAX_RECORD_SECONDS = 15
+SILENCE_AFTER_VOICE = 0.8    # bolna band -> 0.8 sec -> stop
+CHUNK = 0.08                 # 80ms chunks (jaldi detect)
 
-print("Whisper model load ho raha hai...")
-_model = whisper.load_model("small")
+print("Whisper base load ho raha hai (fast + accurate)...")
+_model = whisper.load_model("base")   # small se 3x tez
 print("Whisper ready hai.")
 
 print(f"{CALIB_SECONDS} second chup raho...")
@@ -19,14 +24,16 @@ _calib = sd.rec(int(CALIB_SECONDS * SAMPLE_RATE), samplerate=SAMPLE_RATE,
                 channels=1, dtype="int16")
 sd.wait()
 AMBIENT = float(np.abs(_calib).mean())
-PEAK_THRESHOLD = max(AMBIENT * 12.0, 900)
-print(f"Calibrated: ambient={AMBIENT:.0f}, peak_thr={PEAK_THRESHOLD:.0f}")
+# Voice start threshold (kam - soft voice bhi pakde)
+VOICE_START = max(AMBIENT * 2.5, 500)
+# Silence threshold (chhota - bas thoda upar)
+SILENCE_LEVEL = max(AMBIENT * 1.8, 350)
+print(f"Calibrated: ambient={AMBIENT:.0f}, start={VOICE_START:.0f}, silence={SILENCE_LEVEL:.0f}")
 
 _HINT = (
-    "NOVA voice commands. time kya hai, chrome kholo, youtube kholo, "
-    "notepad kholo, downloads kholo, screenshot lo, screenshot dikhao, "
-    "gaana bajao, volume badhao, volume kam karo, mute karo, lock karo, "
-    "shutdown karo, restart karo, bye, exit"
+    "NOVA commands Hindi English Hinglish. "
+    "mera naam, mere dost ka naam, bhai, behen, maa, papa. "
+    "time kya hai, chrome kholo, screenshot lo, gaana bajao, volume, mute, bye."
 )
 
 _HALLUCINATIONS = [
@@ -49,32 +56,75 @@ def _is_repetition(text):
     return False
 
 
+def _record_until_silence():
+    print("\nBOLO ABHI...")
+    chunks = []
+    chunk_samples = int(CHUNK * SAMPLE_RATE)
+    voice_started = False
+    silence_time = 0.0
+    total_time = 0.0
+    peak_all = 0
+    voice_start_time = 0.0
+
+    stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
+                            dtype="int16", blocksize=chunk_samples)
+    stream.start()
+    try:
+        while True:
+            data, _ = stream.read(chunk_samples)
+            flat = data.flatten()
+            peak = float(np.abs(flat).max())
+            rms = float(np.abs(flat).mean())
+            if peak > peak_all:
+                peak_all = peak
+            total_time += CHUNK
+
+            if not voice_started:
+                if peak > VOICE_START:
+                    voice_started = True
+                    voice_start_time = total_time
+                    print("(voice detect - sun raha hoon...)")
+                    chunks.append(flat)
+            else:
+                chunks.append(flat)
+                if rms < SILENCE_LEVEL and peak < VOICE_START * 0.8:
+                    silence_time += CHUNK
+                    if silence_time >= SILENCE_AFTER_VOICE:
+                        break
+                else:
+                    silence_time = 0.0
+
+            if total_time >= MAX_RECORD_SECONDS:
+                break
+    finally:
+        stream.stop()
+        stream.close()
+
+    if not chunks:
+        return None, peak_all
+
+    audio = np.concatenate(chunks)
+    return audio, peak_all
+
+
 def listen():
-    print("\nTayyar ho jao...")
-    time.sleep(0.3)
-    print("BOL SAKTE HO ABHI!")
+    audio, peak = _record_until_silence()
 
-    audio = sd.rec(
-        int(RECORD_SECONDS * SAMPLE_RATE),
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="int16",
-    )
-    sd.wait()
-
-    flat = audio.flatten().astype(np.float32)
-    abs_flat = np.abs(flat)
-    avg = float(abs_flat.mean())
-    peak = float(abs_flat.max())
-    print(f"Samajh raha hoon... (avg={avg:.0f}, peak={peak:.0f}, thr={PEAK_THRESHOLD:.0f})")
-
-    if peak < PEAK_THRESHOLD:
-        print("(chup tha, skip)")
+    if audio is None or len(audio) < SAMPLE_RATE * 0.3:
+        print(f"(chup tha, peak={peak:.0f})")
         return ""
 
-    gain = min(8000.0 / max(peak, 1), 30.0)
-    boosted = np.clip(flat * gain, -32768, 32767).astype(np.int16).reshape(-1, 1)
-    print(f"(amplified {gain:.1f}x)")
+    duration = len(audio) / SAMPLE_RATE
+    avg = float(np.abs(audio).mean())
+    print(f"Sun liya ({duration:.1f}s) - samajh raha hoon...")
+
+    if peak < VOICE_START:
+        print("(bahut kamzor, skip)")
+        return ""
+
+    flat = audio.astype(np.float32)
+    gain = min(8000.0 / max(peak, 1), 20.0)
+    boosted = np.clip(flat * gain, -32768, 32767).astype(np.int16)
 
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         write_wav(tmp.name, SAMPLE_RATE, boosted)
@@ -90,6 +140,8 @@ def listen():
             logprob_threshold=-1.0,
             condition_on_previous_text=False,
             temperature=0.0,
+            beam_size=1,      # faster (default 5)
+            best_of=1,        # faster
         )
         text = result["text"].strip()
     finally:

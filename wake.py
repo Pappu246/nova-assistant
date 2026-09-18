@@ -1,7 +1,6 @@
 ﻿"""
-NOVA Wake Word — 'Hey Jarvis' peak-based detection.
+NOVA Wake Word — 'Hey Jarvis' (soft-detection friendly).
 """
-
 import numpy as np
 import sounddevice as sd
 import time
@@ -16,12 +15,12 @@ except Exception as e:
 SAMPLE_RATE = 16000
 CHUNK = 1280  # 80ms
 
-# Peak threshold — spikes detect karne ke liye
-THRESHOLD = 0.35
-# Kitne consecutive frames mein peak hona chahiye (80ms each)
+# Soft detection ke liye sensitivity
+THRESHOLD = 0.12        # pehle 0.35 tha, ab 0.22 (soft bhi pakde)
 MIN_FRAMES_ABOVE = 1
-# Recent history window (frames)
 WINDOW = 25
+# Score spike ratio — mean se kitna upar peak ho
+PEAK_RATIO = 2.2        # peak / rolling_mean > 3.5 to bhi trigger
 
 _model = None
 
@@ -34,7 +33,7 @@ def _init():
             wakeword_models=["hey_jarvis"],
             inference_framework="onnx",
         )
-        print("[wake] Ready. Bolo 'Hey Jarvis'.")
+        print("[wake] Ready. Bolo 'Hey Jarvis' (dheere bhi chalega).")
 
 
 def _beep():
@@ -65,19 +64,29 @@ def wait_for_wake_word(timeout_sec=None):
         audio = indata[:, 0].astype(np.int16)
         try:
             preds = _model.predict(audio)
-            if preds:
-                score = list(preds.values())[0]
-                scores.append(score)
-                if len(scores) > WINDOW:
-                    scores.pop(0)
-                # Recent window mein kitne frames threshold se upar hain
-                above = sum(1 for s in scores if s > THRESHOLD)
-                # Peak recent
-                peak = max(scores) if scores else 0
-                # Trigger: agar recent peak THRESHOLD se upar hai
-                if peak > THRESHOLD and above >= MIN_FRAMES_ABOVE:
+            if not preds:
+                return
+            score = float(list(preds.values())[0])
+            scores.append(score)
+            if len(scores) > WINDOW:
+                scores.pop(0)
+
+            peak = max(scores)
+            mean_score = sum(scores) / len(scores) if scores else 0
+
+            # Method 1: Absolute threshold (soft voice ke liye kam)
+            if peak > THRESHOLD:
+                triggered["flag"] = True
+                print(f"[wake] Suna! (peak={peak:.2f})")
+                return
+
+            # Method 2: Relative spike - mean se bahut upar
+            if len(scores) > 5 and peak > 0.1 and mean_score > 0:
+                ratio = peak / max(mean_score, 0.01)
+                if ratio > PEAK_RATIO and peak > 0.15:
                     triggered["flag"] = True
-                    print(f"[wake] Suna! (peak={peak:.2f}, frames_above={above})")
+                    print(f"[wake] Suna! (spike, peak={peak:.2f}, ratio={ratio:.1f})")
+                    return
         except Exception:
             pass
 
@@ -106,9 +115,9 @@ def wait_for_wake_word(timeout_sec=None):
 
 
 if __name__ == "__main__":
-    print("Test mode - 'Hey Jarvis' bolo...")
-    for i in range(3):
-        print(f"\nAttempt {i+1}/3 (max 20 sec wait)...")
+    print("Test mode - 'Hey Jarvis' DHEERE bolo...")
+    for i in range(5):
+        print(f"\nAttempt {i+1}/5 (max 20 sec)...")
         if wait_for_wake_word(timeout_sec=20):
             print(">>> WAKE WORD DETECTED!")
         else:

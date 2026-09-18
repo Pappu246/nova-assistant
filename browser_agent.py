@@ -1,10 +1,6 @@
 ﻿import warnings
 warnings.filterwarnings("ignore")
 import asyncio
-try:
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-except Exception:
-    pass
 
 import os
 import time
@@ -68,7 +64,10 @@ async def _browse_task(task_english, model):
                 break
             except Exception:
                 continue
-    browser = Browser(headless=False)
+    browser = Browser(
+        headless=False,
+        keep_alive=False,          # Stable: task ke baad clean exit
+    )
     agent = Agent(
         task=task_english,
         llm=llm,
@@ -76,7 +75,15 @@ async def _browse_task(task_english, model):
         browser=browser,
         use_vision=True,
     )
-    return await agent.run(max_steps=25)
+    try:
+        result = await agent.run(max_steps=25)
+        return result
+    finally:
+        # CDP session clean close
+        try:
+            await browser.close()
+        except Exception:
+            pass
 
 
 def _extract_result(result):
