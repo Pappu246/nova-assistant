@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1050" viewBox="0 0 1600 1050">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1220"/><stop offset="1" stop-color="#111827"/></linearGradient>
+  <linearGradient id="node" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#172033"/><stop offset="1" stop-color="#1f2937"/></linearGradient>
+  <filter id="shadow"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-opacity=".28"/></filter>
+  <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#94a3b8"/></marker>
+  <style>
+    .title{font:700 34px Arial,sans-serif;fill:#f8fafc}.sub{font:400 16px Arial,sans-serif;fill:#94a3b8}
+    .h{font:700 18px Arial,sans-serif;fill:#f8fafc}.p{font:400 14px Arial,sans-serif;fill:#cbd5e1}
+    .small{font:400 12px Arial,sans-serif;fill:#94a3b8}.line{stroke:#64748b;stroke-width:2.5;fill:none;marker-end:url(#arrow)}
+    .node{fill:url(#node);stroke:#334155;stroke-width:1.5;rx:14;filter:url(#shadow)}
+    .decision{fill:#172033;stroke:#64748b;stroke-width:1.5}
+    .accent{stroke:#60a5fa}.green{stroke:#34d399}.amber{stroke:#f59e0b}
+  </style>
+</defs>
+<rect width="1600" height="1050" fill="url(#bg)"/>
+<text x="70" y="65" class="title">NOVA — Desktop Control Flow</text>
+<text x="70" y="94" class="sub">Input → perception → routing → action → verification → response, with persistent state and repeatable tool execution</text>
+
+<rect x="70" y="130" width="310" height="150" class="node accent"/>
+<text x="95" y="162" class="h">1. INPUT LAYER</text>
+<text x="95" y="190" class="p">Voice / text command</text>
+<text x="95" y="214" class="p">Microphone → sounddevice</text>
+<text x="95" y="238" class="p">Wake word / continuous mode</text>
+<text x="95" y="262" class="p">Optional voice identity check</text>
+
+<rect x="455" y="130" width="310" height="150" class="node"/>
+<text x="480" y="162" class="h">2. PERCEPTION</text>
+<text x="480" y="190" class="p">Audio calibration + activity detection</text>
+<text x="480" y="214" class="p">Whisper speech-to-text</text>
+<text x="480" y="238" class="p">Normalize incoming command</text>
+<text x="480" y="262" class="p">Pass text to brain.py</text>
+
+<rect x="840" y="130" width="310" height="150" class="node green"/>
+<text x="865" y="162" class="h">3. DECISION CORE</text>
+<text x="865" y="190" class="p">brain.py builds context + history</text>
+<text x="865" y="214" class="p">Configured model routing</text>
+<text x="865" y="238" class="p">Groq → fallback → Ollama</text>
+<text x="865" y="262" class="p">Returns tool + arguments + reply</text>
+
+<rect x="1225" y="130" width="305" height="150" class="node amber"/>
+<text x="1250" y="162" class="h">4. ROUTER</text>
+<text x="1250" y="190" class="p">tools.py validates selected action</text>
+<text x="1250" y="214" class="p">Maps command to a concrete tool</text>
+<text x="1250" y="238" class="p">Keeps execution outside the prompt</text>
+<text x="1250" y="262" class="p">Returns an execution result</text>
+
+<path d="M380 205 H455" class="line"/><path d="M765 205 H840" class="line"/><path d="M1150 205 H1225" class="line"/>
+
+<rect x="120" y="370" width="1360" height="250" class="node"/>
+<text x="150" y="408" class="h">5. ACTION FABRIC — REAL DESKTOP OPERATIONS</text>
+<text x="150" y="435" class="small">The selected tool executes on the Windows host. NOVA is not a sandboxed application.</text>
+
+<rect x="150" y="465" width="245" height="115" class="node"/>
+<text x="175" y="494" class="h">Desktop</text><text x="175" y="520" class="p">Open apps / folders</text><text x="175" y="542" class="p">Screenshots / clipboard</text><text x="175" y="564" class="p">Type / lock / shutdown</text>
+
+<rect x="430" y="465" width="245" height="115" class="node"/>
+<text x="455" y="494" class="h">Browser</text><text x="455" y="520" class="p">Web search</text><text x="455" y="542" class="p">Browser task automation</text><text x="455" y="564" class="p">YouTube / Spotify</text>
+
+<rect x="710" y="465" width="245" height="115" class="node"/>
+<text x="735" y="494" class="h">State</text><text x="735" y="520" class="p">SQLite memory</text><text x="735" y="542" class="p">Notes</text><text x="735" y="564" class="p">Reminders + watcher</text>
+
+<rect x="990" y="465" width="245" height="115" class="node"/>
+<text x="1015" y="494" class="h">Media</text><text x="1015" y="520" class="p">Volume controls</text><text x="1015" y="542" class="p">Playback controls</text><text x="1015" y="564" class="p">Next / previous / mute</text>
+
+<rect x="1270" y="465" width="185" height="115" class="node"/>
+<text x="1295" y="494" class="h">Screen</text><text x="1295" y="520" class="p">Periodic screen</text><text x="1295" y="542" class="p">observation</text><text x="1295" y="564" class="p">callback to voice</text>
+
+<path d="M1378 280 V350 H800 V370" class="line"/>
+
+<polygon points="800,680 930,745 800,810 670,745" class="decision"/>
+<text x="730" y="739" class="h">Action complete?</text><text x="724" y="762" class="small">result / failure</text>
+<path d="M800 620 V680" class="line"/>
+
+<rect x="120" y="865" width="380" height="120" class="node green"/>
+<text x="145" y="897" class="h">6. RESPONSE + STATE UPDATE</text>
+<text x="145" y="923" class="p">Tool result becomes the response</text>
+<text x="145" y="946" class="p">History is retained for the session</text>
+<text x="145" y="969" class="p">Memory/reminders persist where requested</text>
+
+<rect x="610" y="865" width="380" height="120" class="node accent"/>
+<text x="635" y="897" class="h">7. OUTPUT</text>
+<text x="635" y="923" class="p">Response text → Edge-TTS</text>
+<text x="635" y="946" class="p">Speaker / terminal output</text>
+<text x="635" y="969" class="p">HUD status can reflect execution</text>
+
+<rect x="1100" y="865" width="380" height="120" class="node amber"/>
+<text x="1125" y="897" class="h">8. CONTINUE / NEXT COMMAND</text>
+<text x="1125" y="923" class="p">Continuous mode returns to listening</text>
+<text x="1125" y="946" class="p">Wake mode waits for the next wake word</text>
+<text x="1125" y="969" class="p">New input starts another execution cycle</text>
+
+<path d="M670 745 H500 V865" class="line"/>
+<path d="M930 745 H1100 V865" class="line"/>
+<path d="M500 925 H610" class="line"/>
+<path d="M990 925 H1100" class="line"/>
+<path d="M1290 865 C1290 820 1390 820 1390 745 H930" class="line"/>
+<text x="1015" y="808" class="small">failure / retry path</text>
+
+<path d="M1290 985 C1290 1020 300 1020 300 280 V280" class="line"/>
+<text x="650" y="1018" class="small">continuous execution loop</text>
+</svg>
