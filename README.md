@@ -1,324 +1,573 @@
-# NOVA - Personal AI Assistant
+# NOVA
 
-A fully local, voice-controlled personal AI assistant inspired by JARVIS from Iron Man. Runs entirely on your machine with free APIs and local models.
+NOVA is a Windows-focused personal desktop assistant built as a modular Python project. It combines voice input, speech output, wake-word detection, persistent memory, reminders, browser automation, screen monitoring, desktop controls, and a local web dashboard.
 
----
+The project is designed to run on the user's own machine and keep the assistant's operating logic close to the desktop it controls. Cloud services are used where configured, while Ollama provides a local language-model fallback.
 
-## Current Status
+## Project Status
 
-| Module | Status |
-|--------|--------|
-| Voice input (Whisper medium) | Working |
-| Voice output (Edge-TTS Madhur) | Working |
-| Wake word (Hey Jarvis) | Working |
-| Continuous mode | Working |
-| Voice ID (only Boss voice) | Working |
-| Memory (facts + recall) | Working |
-| 26 Tools | Working |
-| Browser automation | Working |
-| Screen watcher | Working |
-| Reminders | Working |
-| HUD overlay | Working |
-| Web dashboard | Partial |
----
+| Area | Current state |
+| --- | --- |
+| Voice input | Implemented with Whisper |
+| Voice output | Implemented with Microsoft Edge-TTS |
+| Wake word | Implemented with openWakeWord |
+| Voice identification | Implemented with SpeechBrain ECAPA |
+| Continuous listening | Implemented |
+| Desktop controls | Implemented |
+| Browser automation | Implemented |
+| Memory and notes | Implemented with SQLite |
+| Reminders | Implemented |
+| Screen watcher | Implemented |
+| Desktop HUD | Implemented |
+| Web dashboard | Implemented; active development continues |
+
+## What NOVA Can Do
+
+NOVA is built around actions rather than a single chat loop. Depending on the command, it can:
+
+- answer normal questions through the configured language model
+- open Windows applications, folders and supported websites
+- search files and open screenshot folders
+- take screenshots
+- control system volume and media playback
+- lock the workstation or schedule shutdown/restart commands
+- type text and copy content to the clipboard
+- search Google and use the browser automation layer
+- play or search YouTube and Spotify
+- create, list and clear reminders
+- remember facts, recall them later, and manage notes
+- observe the screen at intervals through the screen watcher
+- expose assistant state, chat, tasks and voice controls through a local FastAPI dashboard
 
 ## Architecture
 
+```text
+                         +----------------------+
+                         |       User           |
+                         |  Voice / Text / UI   |
+                         +----------+-----------+
+                                    |
+                     +--------------+--------------+
+                     |                             |
+                     v                             v
+              +-------------+                +-------------+
+              | Microphone  |                | Web Browser |
+              +------+------+                +------+------+
+                     |                              |
+                     v                              v
+              +-------------+                +-------------+
+              | Voice ID    |                | FastAPI     |
+              | SpeechBrain |                | server.py   |
+              +------+------+                +------+------+
+                     |                              |
+                     v                              |
+              +-------------+                       |
+              |   Whisper   |                       |
+              | Speech-to-  |                       |
+              |    Text     |                       |
+              +------+------+                       |
+                     |                              |
+                     +--------------+---------------+
+                                    |
+                                    v
+                         +----------------------+
+                         |       brain.py       |
+                         | Prompt + LLM routing |
+                         +----------+-----------+
+                                    |
+                    +---------------+----------------+
+                    |                                |
+                    v                                v
+          +--------------------+          +----------------------+
+          | Groq / configured  |          | Ollama local model  |
+          | cloud model        |          | fallback             |
+          +---------+----------+          +----------+-----------+
+                    |                                |
+                    +----------------+---------------+
+                                     |
+                                     v
+                           +--------------------+
+                           |     Tool Router    |
+                           |      tools.py      |
+                           +---------+----------+
+                                     |
+           +------------+-------------+-------------+-------------+
+           |            |             |             |             |
+           v            v             v             v             v
+       Windows       Browser       Memory        Reminders      Screen
+       control       agent         SQLite         module        watcher
+           |            |             |             |             |
+           +------------+-------------+-------------+-------------+
+                                     |
+                                     v
+                           +--------------------+
+                           | Response / State   |
+                           +---------+----------+
+                                     |
+                         +-----------+-----------+
+                         |                       |
+                         v                       v
+                +----------------+        +-------------+
+                | Edge-TTS /     |        | Web / HUD   |
+                | speaker output |        | dashboard   |
+                +----------------+        +-------------+
 ```
+
+## Runtime Workflow
+
+```text
+Voice path
+
 Microphone
     |
     v
-Voice ID Filter (SpeechBrain)
+Voice activity detected
     |
     v
-Whisper Medium (Speech to Text)
+Voice ID check
+    |
+    +---- voice does not match ----> Ignore input
     |
     v
-Groq LLM (gpt-oss-120b)
-    |
-    +---- Tool Router ----+
-    |                     |
-    v                     v
-  26 Tools            Text Reply
-    |                     |
-    +----------+----------+
-               |
-               v
-    Response Formatter
-    (Gender + Length fix)
-               |
-               v
-    Edge-TTS Output
-    (Madhur voice)
-               |
-               v
-            Speaker
-```
-
----
-
-## Workflow
-
-```
-User speaks
+Whisper transcription
     |
     v
-[Voice ID check] --not Boss--> Ignore
+brain.ask_nova()
     |
     v
-[Whisper transcribes]
-    |
-    v
-[LLM decides: tool or text?]
-    |
-    +-- Tool call --> Execute --> Format --> Speak
-    |
-    +-- Text reply --> Format --> Speak
-    |
-    v
-Loop back to listening
+Tool needed?
+   / \
+ yes  no
+  |    |
+  v    v
+tools.py   Direct response
+  |
+  v
+Execute action
+  |
+  +-------------------+
+                      |
+                      v
+              Final response text
+                      |
+                      v
+                Edge-TTS output
+                      |
+                      v
+                   Speaker
+
+Web dashboard path
+
+Browser
+   |
+   v
+FastAPI server
+   |
+   +--> Chat request ------> brain.ask_nova()
+   |
+   +--> Voice control -----> main / suno / bolo
+   |
+   +--> Tasks -------------> server state
+   |
+   +--> Live status --------> WebSocket /ws
+   |
+   v
+Dashboard updates
 ```
 
----
+## Core Modules
 
-## Installation
+| File | Responsibility |
+| --- | --- |
+| `main.py` | Main application entry point and voice, continuous and text modes |
+| `brain.py` | Language-model calls, response parsing and tool selection |
+| `tools.py` | Windows, browser, media, file, clipboard, memory and reminder actions |
+| `suno.py` | Microphone capture, Whisper transcription and stop-command listening |
+| `bolo.py` | Speech output, Edge-TTS playback and interruption handling |
+| `wake.py` | `Hey Jarvis` wake-word detection |
+| `voice_id.py` | Voice registration and speaker verification |
+| `browser_agent.py` | Browser automation integration |
+| `browser_prompt.py` | Browser-task prompting support |
+| `memory.py` | Persistent facts and notes backed by SQLite |
+| `reminders.py` | Reminder storage, scheduling and watcher |
+| `screen_watcher.py` | Periodic screen analysis |
+| `hud.py` | Floating desktop HUD and assistant state display |
+| `server.py` | Local FastAPI dashboard and WebSocket state endpoint |
+| `web/` | Dashboard HTML, JavaScript and CSS |
+| `.github/workflows/python-check.yml` | Python syntax validation in GitHub Actions |
 
-### Requirements
+## Tool Layer
 
-- Python 3.10+
-- Windows 10/11
-- Microphone
-- 8 GB RAM minimum
-- 4 GB free disk
+The tool registry in `tools.py` currently covers the following areas:
 
-### Setup Steps
+**Desktop**
+- application and folder opening
+- screenshot capture
+- file search
+- clipboard copy
+- text typing
+- workstation lock
+- shutdown and restart commands
 
-1. Clone the repository
+**Media**
+- YouTube search/play
+- Spotify search/play
+- volume up/down/mute
+- play/pause
+- next and previous track
 
-```
-git clone https://github.com/Pappu246/nova-assistant.git
-cd nova-assistant
-```
+**Browser**
+- Google/web search
+- browser task automation
+- browser closing
 
-2. Install Python dependencies
+**Productivity**
+- reminders
+- memory
+- notes
 
-```
-pip install -r requirements.txt
-```
+## Language Model Routing
 
-3. Install Ollama (local LLM fallback)
+`brain.py` first attempts the configured Groq model and falls back to Ollama when the cloud path is unavailable.
 
-Download from https://ollama.com/download
+Current model configuration in the code:
 
-```
-ollama pull llama3.2
-```
-
-4. Set environment variables
-
-```
-setx GROQ_API_KEY "your_key"
-setx GEMINI_API_KEY "your_key"
-```
-
-5. Register your voice
-
-```
-python voice_id.py
-```
-
-Speak 3 times when prompted.
-
-6. Start NOVA
-
-```
-python main.py --continuous
-```
-
-Or wake-word mode:
-
-```
-python main.py
-```
-
----
-
-## File Structure
-
-```
-nova/
-|
-+-- main.py              Main loop
-+-- suno.py              Speech to text
-+-- bolo.py              Text to speech
-+-- brain.py             LLM orchestration
-+-- tools.py             26 tools
-+-- voice_id.py          Voice fingerprint
-+-- wake.py              Wake word
-+-- screen_watcher.py    Screen analysis
-+-- browser_agent.py     Browser automation
-+-- browser_prompt.py    Browser prompt
-+-- reminders.py         Reminders
-+-- memory.py            Persistent memory
-+-- hud.py               HUD overlay
-+-- server.py            Web dashboard
-+-- shutdown.py          Process cleanup
-+-- nova_startup.bat     Launcher
-+-- nova_stop.bat        Stop script
-+-- nova_silent.vbs      Background launcher
-+-- requirements.txt     Dependencies
-+-- README.md            This file
-```
-
----
-
-## Usage Examples
-
-### Basic Commands
-
-```
-Time kya hai
-Chrome kholo
-Screenshot lo
-Volume badhao
-```
-
-### Memory
-
-```
-Mera naam Pappu hai
-Mera naam kya hai
-Kya yaad hai
-```
-
-### Browser Automation
-
-```
-YouTube pe Kesariya gaana bajao
-Google pe weather Delhi search karo
-```
-
-### Reminders
-
-```
-5 minute baad yaad dilana chai peena
-Mere reminders dikhao
-```
-
-### Control
-
-```
-Stop or Ruko    - Stop speaking
-Esc key         - Force stop
-Bye             - Exit
-```
-
----
-
-## Configuration
-
-### Change TTS Voice
-
-Edit bolo.py:
-
-```
-EDGE_VOICE = "hi-IN-MadhurNeural"
-```
-
-Available voices:
-- hi-IN-MadhurNeural (Hindi male)
-- hi-IN-SwaraNeural (Hindi female)
-- en-IN-PrabhatNeural (Indian English male)
-- en-IN-NeerjaNeural (Indian English female)
-- en-US-AndrewMultilingualNeural (US male)
-- en-US-AvaMultilingualNeural (US female)
-
-### Change LLM
-
-Edit brain.py:
-
-```
+```python
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_FALLBACK = "openai/gpt-oss-20b"
 OLLAMA_MODEL = "llama3.2"
 ```
 
-### Change Microphone
+This means NOVA is not strictly offline by default. A local Ollama path exists, but the normal first-choice model route depends on the environment configuration.
 
-Edit suno.py:
+## Voice Pipeline
 
+The current voice stack is split into separate modules:
+
+```text
+Microphone
+   |
+   v
+sounddevice
+   |
+   v
+Audio calibration + voice activity detection
+   |
+   v
+Whisper
+   |
+   v
+Transcribed text
+   |
+   v
+NOVA reasoning and actions
+   |
+   v
+Edge-TTS
+   |
+   v
+Speaker
 ```
+
+The configured TTS voice is:
+
+```python
+EDGE_VOICE = "hi-IN-MadhurNeural"
+```
+
+The wake-word module listens for:
+
+```text
+Hey Jarvis
+```
+
+The voice identification module can register a reference voice and compare incoming audio against it using SpeechBrain ECAPA embeddings.
+
+## Web Dashboard
+
+The repository contains a local web interface under `web/`, served by `server.py`.
+
+The dashboard currently includes interfaces for:
+
+- chat
+- voice activation
+- apps and tools
+- files
+- automation
+- devices
+- tasks
+- memory
+- notes
+- settings
+
+The server also exposes local endpoints for chat, speech, voice activation, tasks, history and live WebSocket status.
+
+Run the dashboard with:
+
+```bash
+python server.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+## Requirements
+
+The project is intended primarily for Windows.
+
+Recommended baseline:
+
+- Windows 10 or Windows 11
+- Python 3.10 or newer
+- Working microphone
+- Speakers or headphones
+- Sufficient RAM for Whisper inference
+- Internet access for cloud model calls, Edge-TTS and browser-related features when those services are enabled
+
+The repository's `requirements.txt` currently contains:
+
+```text
+ollama
+openai-whisper
+sounddevice
+numpy
+scipy
+pyttsx3
+```
+
+Some modules also use additional packages conditionally at runtime, such as browser automation, audio playback, screen capture, voice identification and dashboard dependencies. Install those components as required by the feature you enable.
+
+## Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/Pappu246/nova-assistant.git
+cd nova-assistant
+```
+
+Create and activate a virtual environment:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+Install the repository requirements:
+
+```bash
+pip install -r requirements.txt
+```
+
+For local model fallback, install Ollama and pull the configured model:
+
+```bash
+ollama pull llama3.2
+```
+
+Set the required environment variables for the services you plan to use:
+
+```powershell
+setx GROQ_API_KEY "your_key"
+```
+
+Restart the terminal after using `setx`.
+
+## Running NOVA
+
+Voice mode:
+
+```bash
+python main.py
+```
+
+Continuous mode:
+
+```bash
+python main.py --continuous
+```
+
+Text-only mode:
+
+```bash
+python main.py --text
+```
+
+Voice registration:
+
+```bash
+python voice_id.py
+```
+
+Web dashboard:
+
+```bash
+python server.py
+```
+
+## Example Commands
+
+```text
+time kya hai
+chrome kholo
+screenshot lo
+volume badhao
+youtube pe Kesariya bajao
+google pe weather Delhi search karo
+5 minute baad yaad dilana chai peena
+mera naam Pappu hai
+mera naam kya hai
+mere notes dikhao
+browser mein Google kholo
+```
+
+## Configuration
+
+### Language model
+
+Update the constants in `brain.py`:
+
+```python
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_FALLBACK = "openai/gpt-oss-20b"
+OLLAMA_MODEL = "llama3.2"
+```
+
+### Text-to-speech
+
+Update the voice in `bolo.py`:
+
+```python
+EDGE_VOICE = "hi-IN-MadhurNeural"
+EDGE_RATE = "+5%"
+EDGE_PITCH = "+0Hz"
+```
+
+### Microphone
+
+Update the configured device index in `suno.py` when a different recording device is required:
+
+```python
 MIC_DEVICE = 1
 ```
 
-### Change Wake Word Sensitivity
+### Wake word
 
-Edit wake.py:
+Wake-word sensitivity is configured in `wake.py`:
 
-```
+```python
 THRESHOLD = 0.30
 ```
 
----
+### Voice profile
 
-## Tech Stack
+Run:
 
-| Component | Technology |
-|-----------|------------|
-| Speech to Text | OpenAI Whisper (medium) |
-| Text to Speech | Microsoft Edge-TTS |
-| Wake Word | openWakeWord |
-| Voice ID | SpeechBrain ECAPA |
-| LLM Cloud | Groq gpt-oss-120b |
-| LLM Local | Ollama llama3.2 |
-| Browser Agent | browser-use + Gemini |
-| Screen Analysis | Gemini Vision |
-| Memory | SQLite |
-| HUD | Tkinter |
-| Web Dashboard | FastAPI |
----
+```bash
+python voice_id.py
+```
+
+The registration flow stores the reference voice locally as `boss_voice.pkl`.
+
+## Automation and Safety Notes
+
+NOVA can perform real desktop actions. Commands such as opening applications, typing text, locking Windows and scheduling shutdown affect the host machine directly.
+
+Review commands before using them in unattended or continuous mode. The shutdown tool uses a delayed Windows command and supports cancellation through the corresponding command path.
+
+The project should be treated as a personal desktop automation project rather than a sandboxed application.
+
+## Development
+
+The repository includes a GitHub Actions workflow at:
+
+```text
+.github/workflows/python-check.yml
+```
+
+It currently runs Python syntax checks for:
+
+```text
+main.py
+brain.py
+tools.py
+```
+
+Local syntax validation can be run with:
+
+```bash
+python -m py_compile main.py brain.py tools.py
+```
 
 ## Roadmap
 
-- [x] Phase 1 - Basic voice loop
-- [x] Phase 2 - 20+ tools
-- [x] Phase 3 - Browser automation
-- [x] Phase 4 - Wake word
-- [x] Phase 5 - Memory
-- [x] Phase 6 - Auto-start + HUD
-- [x] Phase 7 - Voice ID
-- [x] Phase 8 - Continuous mode
-- [x] Phase 9 - Screen watcher
-- [x] Phase 10 - Reminders
-- [ ] Phase 11 - Web dashboard fix
-- [ ] Phase 12 - WhatsApp / Email
-- [ ] Phase 13 - Vision based app control
-- [ ] Phase 14 - Mobile companion app
----
+The current codebase already contains the major building blocks for a desktop assistant. Planned work can focus on reliability, packaging and integration:
 
-## Known Issues
+```text
+Current
+  |
+  +--> Dashboard reliability
+  |
+  +--> More robust browser automation
+  |
+  +--> Better screen-based control
+  |
+  +--> Email and messaging integrations
+  |
+  +--> Device / companion support
+  |
+  +--> Mobile interface
+  |
+  +--> Installer and background service
+```
 
-- Bluetooth headset microphone has low accuracy
-- Stop voice command may not work during TTS (use Esc key)
-- Web dashboard Failed to fetch error (under investigation)
-- Whisper medium requires 1.5 GB RAM during inference
----
+## Project Structure
 
-## Links
-
-- Whisper: https://github.com/openai/whisper
-- Edge-TTS: https://github.com/rany2/edge-tts
-- openWakeWord: https://github.com/dscripka/openWakeWord
-- SpeechBrain: https://speechbrain.github.io
-- browser-use: https://github.com/browser-use/browser-use
-- Ollama: https://ollama.com
-- Groq: https://console.groq.com
-- Gemini: https://aistudio.google.com
----
+```text
+nova-assistant/
+|
++-- .github/
+|   +-- workflows/
+|       +-- python-check.yml
+|
++-- web/
+|   +-- index.html
+|   +-- app.js
+|   +-- style.css
+|
++-- main.py
++-- brain.py
++-- tools.py
++-- suno.py
++-- bolo.py
++-- wake.py
++-- voice_id.py
++-- browser_agent.py
++-- browser_prompt.py
++-- screen_watcher.py
++-- memory.py
++-- reminders.py
++-- hud.py
++-- server.py
++-- shutdown.py
++-- nova_startup.bat
++-- nova_stop.bat
++-- nova_silent.vbs
++-- requirements.txt
++-- README.md
+```
 
 ## License
 
 MIT
----
 
-Inspired by JARVIS from Iron Man. Built with free and open source tools.
+## Author
+
+Built and maintained by [Pappu246](https://github.com/Pappu246).
+
+Repository:
+
+https://github.com/Pappu246/nova-assistant
