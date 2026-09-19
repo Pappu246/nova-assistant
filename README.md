@@ -46,6 +46,14 @@ It can currently:
 - monitor the screen at a configured interval
 - respond through voice or text
 
+## Desktop HUD
+
+When NOVA starts, the desktop HUD provides a compact visual status view around the central NOVA core. The current interface shows the system state, clock and readiness state while the assistant is running.
+
+![NOVA Desktop HUD](docs/nova-hud.svg)
+
+The HUD is implemented by `hud.py` and is updated by the runtime as NOVA moves between states such as ready, listening, thinking and speaking.
+
 ## System Architecture
 
 NOVA follows a simple control pipeline:
@@ -493,6 +501,7 @@ nova-assistant/
 |
 +-- docs/
 |   +-- nova-workflow.svg
+|   +-- nova-hud.svg
 |
 +-- main.py
 +-- brain.py
