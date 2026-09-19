@@ -16,11 +16,11 @@ SAMPLE_RATE = 16000
 CHUNK = 1280  # 80ms
 
 # Soft detection ke liye sensitivity
-THRESHOLD = 0.12        # pehle 0.35 tha, ab 0.22 (soft bhi pakde)
+THRESHOLD = 0.30        # pehle 0.35 tha, ab 0.22 (soft bhi pakde)
 MIN_FRAMES_ABOVE = 1
 WINDOW = 25
 # Score spike ratio — mean se kitna upar peak ho
-PEAK_RATIO = 2.2        # peak / rolling_mean > 3.5 to bhi trigger
+PEAK_RATIO = 6.0        # peak / rolling_mean > 3.5 to bhi trigger
 
 _model = None
 
@@ -34,6 +34,20 @@ def _init():
             inference_framework="onnx",
         )
         print("[wake] Ready. Bolo 'Hey Jarvis' (dheere bhi chalega).")
+
+
+
+def _ping_dashboard():
+    """Dashboard ko batao ki wake word suna."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "http://127.0.0.1:8000/api/wake/ping",
+            method="POST"
+        )
+        urllib.request.urlopen(req, timeout=1)
+    except Exception:
+        pass
 
 
 def _beep():
@@ -80,23 +94,32 @@ def wait_for_wake_word(timeout_sec=None):
                 print(f"[wake] Suna! (peak={peak:.2f})")
                 return
 
-            # Method 2: Relative spike - mean se bahut upar
-            if len(scores) > 5 and peak > 0.1 and mean_score > 0:
-                ratio = peak / max(mean_score, 0.01)
-                if ratio > PEAK_RATIO and peak > 0.15:
-                    triggered["flag"] = True
-                    print(f"[wake] Suna! (spike, peak={peak:.2f}, ratio={ratio:.1f})")
-                    return
+            # Spike detection DISABLED (too noisy)
+            # Only absolute threshold now
+            pass
         except Exception:
             pass
 
-    with sd.InputStream(
-        callback=cb,
-        channels=1,
-        samplerate=SAMPLE_RATE,
-        dtype="int16",
-        blocksize=CHUNK,
-    ):
+    # Try opening stream with retry
+    stream = None
+    for attempt in range(5):
+        try:
+            stream = sd.InputStream(
+                callback=cb,
+                channels=1,
+                samplerate=SAMPLE_RATE,
+                dtype="int16",
+                blocksize=CHUNK,
+            )
+            break
+        except Exception as e:
+            print(f"[wake] stream open fail (attempt {attempt+1}): {str(e)[:60]}")
+            time.sleep(0.5)
+    if stream is None:
+        print("[wake] Could not open mic")
+        return False
+
+    with stream:
         while not triggered["flag"]:
             sd.sleep(50)
             if timeout_sec and (time.time() - start_time) > timeout_sec:
@@ -107,6 +130,7 @@ def wait_for_wake_word(timeout_sec=None):
             _model.reset()
         except Exception:
             pass
+        _ping_dashboard()
         _beep()
         time.sleep(0.4)
         return True

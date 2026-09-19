@@ -1,4 +1,4 @@
-__pycache__/
+﻿__pycache__/
 *.py[cod]
 *.class
 .env
@@ -6,7 +6,6 @@ __pycache__/
 venv/
 .venv/
 env/
-ENV/
 *.log
 .pytest_cache/
 .mypy_cache/
@@ -14,3 +13,17 @@ ENV/
 .vscode/
 .idea/
 .DS_Store
+
+# NOVA generated
+nova_memory.db
+boss_voice.pkl
+reminders.json
+*.wav
+*.mp3
+*.onnx
+*.tflite
+*.pkl
+pretrained_models/
+voices/
+gemini_model.txt
+*.log

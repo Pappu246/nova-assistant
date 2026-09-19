@@ -1,5 +1,9 @@
-﻿import json
+﻿"""
+NOVA brain - Groq LLM + 26 tools + gender fix.
+"""
+import json
 import os
+import re
 
 try:
     from groq import Groq
@@ -13,149 +17,184 @@ try:
 except Exception:
     _OLLAMA = False
 
-from tools import TOOLS
+try:
+    from tools import TOOLS
+except Exception as e:
+    print(f"[brain] tools import fail: {e}")
+    TOOLS = {}
 
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_FALLBACK = "openai/gpt-oss-20b"
-OLLAMA_MODEL = "llama3.1"
+OLLAMA_MODEL = "llama3.2"
+
+
+_FEMALE_TO_MALE = [
+    (r"\bkar rahi hoon\b", "kar raha hoon"),
+    (r"\bkar rahi thi\b", "kar raha tha"),
+    (r"\bkar rahi\b", "kar raha"),
+    (r"\bbol rahi hoon\b", "bol raha hoon"),
+    (r"\bbol rahi\b", "bol raha"),
+    (r"\bsun rahi hoon\b", "sun raha hoon"),
+    (r"\bsun rahi\b", "sun raha"),
+    (r"\bsoch rahi hoon\b", "soch raha hoon"),
+    (r"\bsoch rahi\b", "soch raha"),
+    (r"\bso rahi\b", "so raha"),
+    (r"\bja rahi\b", "ja raha"),
+    (r"\baa rahi\b", "aa raha"),
+    (r"\bsamajh gayi\b", "samajh gaya"),
+    (r"\bkar gayi\b", "kar gaya"),
+    (r"\bbool gayi\b", "bhool gaya"),
+    (r"\bso gayi\b", "so gaya"),
+    (r"\baa gayi\b", "aa gaya"),
+    (r"\bja gayi\b", "ja gaya"),
+    (r"\bho gayi\b", "ho gaya"),
+    (r"\bban gayi\b", "ban gaya"),
+    (r"\bde gayi\b", "de gaya"),
+    (r"\ble gayi\b", "le gaya"),
+    (r"\bbaithi hoon\b", "baitha hoon"),
+    (r"\bbaithi thi\b", "baitha tha"),
+    (r"\bbaithi\b", "baitha"),
+    (r"\bkhadi hoon\b", "khada hoon"),
+    (r"\bkhadi\b", "khada"),
+    (r"\btaiyaar thi\b", "taiyaar tha"),
+    (r"\bmadad karungi\b", "madad karunga"),
+    (r"\bkarungi\b", "karunga"),
+    (r"\bbolungi\b", "bolunga"),
+    (r"\bsunungi\b", "sununga"),
+    (r"\bjaungi\b", "jaunga"),
+    (r"\baungi\b", "aaunga"),
+    (r"\bsakungi\b", "sakunga"),
+    (r"\brahungi\b", "rahunga"),
+    (r"\bgayi\b", "gaya"),
+    (r"\brahi\b", "raha"),
+    (r"\bthi\b", "tha"),
+    (r"\bhui\b", "hua"),
+    (r"\bboli\b", "bola"),
+    (r"\bsuni\b", "suna"),
+    (r"\bkari\b", "kara"),
+    (r"\bjaayi\b", "jaaya"),
+]
+
+
+def _fix_gender(text):
+    if not text:
+        return text
+    t = text
+    for pattern, replacement in _FEMALE_TO_MALE:
+        t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
+    return t
 
 
 def _get_system_prompt():
-    return """Tum NOVA ho, ek personal assistant.
+    return """Tum NOVA ho - Boss ka personal AI assistant. Tum LADKA ho (male).
 
-HAMESHA sirf ek JSON object return karo:
-{"tool": "<tool_name ya none>", "args": {}, "reply": "<text>"}
+Bahut important:
+- Tum MALE ho. Apne baare mein HAMESHA "kar raha hoon", "bol raha hoon", "sun raha hoon" use karo. Kabhi "rahi" nahi.
+- Reply SIRF Hinglish mein (Hindi + English mix, Roman letters).
+- Reply SHORT rakho - 1-2 sentences max, 15 words tak.
+- Zaroori na ho to lamba essay MAT do.
+- "Boss" use karo.
+
+HAMESHA sirf ek JSON return karo:
+{"tool": "<name ya none>", "args": {}, "reply": "<text>"}
 
 Tools:
-1. get_time - {}
-2. get_weather - {"city": "Jaipur"}
-3. open_app - {"app_name": "chrome"}
-4. take_screenshot - {}
-5. open_screenshots - {}
-6. play_youtube - {"query": "song name"}
-7. browse - {"task": "user ki poori command"}
-8. close_browser - {}
-9. play_spotify - {"query": "song name"}
-10. volume_up - {"steps": 5}
-11. volume_down - {"steps": 5}
-12. volume_mute - {}
-13. next_track - {}
-14. prev_track - {}
-15. play_pause - {}
-16. lock_pc - {}
-17. shutdown_pc - {"mode": "shutdown" / "restart" / "cancel"}
-18. copy_to_clipboard - {"text": "..."}
-19. type_text - {"text": "..."}
-20. search_file - {"name": "photo", "where": "downloads"}
-21. web_search - {"query": "..."}
-22. remember - {"key": "user_name", "value": "Pappu"}
-23. recall - {"key": "user_name"}
-24. forget - {"key": "user_name"}
-25. note - {"content": "..."}
-26. list_notes - {}
+get_time, get_weather(city), open_app(app_name), take_screenshot, open_screenshots,
+play_youtube(query), browse(task), close_browser,
+volume_up, volume_down, volume_mute, next_track, prev_track, play_pause,
+lock_pc, shutdown_pc(mode), copy_to_clipboard(text), type_text(text),
+search_file(name, where), web_search(query),
+remember(key, value), recall(key), forget(key), note(content), list_notes,
+set_reminder(text, when), list_reminders, clear_reminders
 
-PRIORITY 1 - MEMORY (hamesha pehle check karo):
-- "mera naam X hai" -> remember user_name=X
-- "mera naam kya hai" -> recall user_name
-- "mere dost ka naam X hai" -> remember friend_name=X
-- "mere bhai ka naam X hai" -> remember brother_name=X
-- "meri behen ka naam X hai" -> remember sister_name=X
-- "meri maa ka naam X hai" -> remember mother_name=X
-- "mere papa ka naam X hai" -> remember father_name=X
-- "mujhe X pasand hai" -> remember like_X=yes
-- "meri umar X hai" -> remember user_age=X
-- "kya yaad hai" -> recall ""
-- "X bhool jao" -> forget X
-- "note karo X" -> note content=X
-- "mere notes dikhao" -> list_notes
+Rules:
+1. MEMORY:
+   - "mera naam X hai" -> remember user_name=X
+   - "mera naam kya hai" -> recall user_name
+   - "mere dost ka naam X" -> remember friend_name=X
+   - "mere bhai ka naam X" -> remember brother_name=X
+   - "meri behen ka naam X" -> remember sister_name=X
+   - "kya yaad hai" -> recall ""
+   - "X bhool jao" -> forget X
+2. SIMPLE:
+   - "time kya hai" -> get_time
+   - "chrome kholo" -> open_app chrome
+   - "weather X" -> get_weather
+   - "screenshot lo" -> take_screenshot
+   - "volume badhao" -> volume_up
+REMINDERS:
+   - "X baje yaad dilana Y" -> set_reminder {"text":"Y","when":"X baje"}
+   - "Y minute baad yaad dilana X" -> set_reminder {"text":"X","when":"Y minute baad"}
+   - "kal X baje meeting" -> set_reminder {"text":"meeting","when":"kal X baje"}
+   - "mere reminders" / "reminders dikhao" -> list_reminders
+   - "sab reminders hatao" -> clear_reminders
 
-PRIORITY 2 - SIMPLE:
-- "chrome/youtube/notepad kholo" -> open_app
-- "time kya hai" -> get_time
-- "weather X" -> get_weather
-- "screenshot lo" -> take_screenshot
-- "volume badhao" -> volume_up
+3. BROWSER (sirf explicit "browser mein", "google pe"):
+   - "google pe X" -> browse
+4. NORMAL SAWAAL -> tool="none", reply mein jawab
 
-PRIORITY 3 - BROWSER (sirf explicit):
-- "browser mein X" / "google pe X" / "youtube pe X bajao" -> browse
-- "browser band karo" -> close_browser
-
-Reply rules:
-- Reply SIRF Hinglish mein, chhota 1-2 sentence (15 words max).
-- "Boss" use karo.
-- Natural tone: "Ho gaya Boss", "Chrome khol raha hoon".
+Examples:
+"kya kar rahe ho" -> {"tool":"none","args":{},"reply":"Yahin hoon Boss, kya karna hai?"}
+"time kya hai" -> {"tool":"get_time","args":{},"reply":""}
+"java kya hai" -> {"tool":"none","args":{},"reply":"Java ek programming language hai jo 1995 mein aayi. Android aur enterprise apps mein use hoti hai."}
+"mera mood kharab hai" -> {"tool":"none","args":{},"reply":"Kya hua Boss? Share karo, sun raha hoon."}
 """
 
 
-def _safe_parse(text):
-    try:
-        p = json.loads(text)
-        if isinstance(p, dict):
-            return p
-    except (json.JSONDecodeError, ValueError):
-        pass
-    return None
-
-
 def _extract_json(text):
-    """Text se JSON object nikalo, chahe markdown ho ya extra text."""
     if not text:
         return None
     text = text.strip()
-    # Markdown code fence hatao
     if "```" in text:
-        import re
         m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
         if m:
             text = m.group(1)
-    # Pehla { aur last } ke beech ka content
     if "{" in text and "}" in text:
         start = text.index("{")
         end = text.rindex("}") + 1
         text = text[start:end]
-    try:
-        return text
-    except Exception:
+    return text
+
+
+def _safe_parse(text):
+    if not text:
         return None
+    try:
+        p = json.loads(text)
+        if isinstance(p, dict):
+            return p
+    except Exception:
+        pass
+    cleaned = _extract_json(text)
+    if cleaned and cleaned != text:
+        try:
+            p = json.loads(cleaned)
+            if isinstance(p, dict):
+                return p
+        except Exception:
+            pass
+    return None
 
 
 def _call_groq(messages):
+    if not _GROQ:
+        return None
     key = os.environ.get("GROQ_API_KEY")
     if not key:
         return None
     client = Groq(api_key=key)
-
-    # System prompt ke saath ek extra nudge
-    messages = list(messages)
-    messages[0] = {
-        "role": "system",
-        "content": messages[0]["content"] + "\n\nIMPORTANT: Reply with ONLY a valid JSON object. No markdown, no code fence, no explanation."
-    }
-
     for model in [GROQ_MODEL, GROQ_FALLBACK]:
         try:
             resp = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                temperature=0.3,
-                max_tokens=200,
+                temperature=0.6,
+                max_tokens=500,
+                timeout=15,
             )
-            raw = resp.choices[0].message.content.strip()
-            clean = _extract_json(raw)
-            if clean:
-                # JSON valid hai? Verify karo
-                try:
-                    parsed = json.loads(clean)
-                    if isinstance(parsed, dict) and "tool" in parsed:
-                        return clean
-                    else:
-                        print(f"[groq {model}] JSON mein 'tool' key nahi, fallback")
-                        continue
-                except (json.JSONDecodeError, ValueError) as e:
-                    print(f"[groq {model}] invalid JSON: {str(e)[:50]}")
-                    continue
+            return resp.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[groq {model} fail] {str(e)[:80]}")
+            print(f"[groq {model}] {str(e)[:80]}")
             continue
     return None
 
@@ -167,11 +206,11 @@ def _call_ollama(messages):
         response = ollama.chat(
             model=OLLAMA_MODEL,
             messages=messages,
-            format="json",
+            options={"temperature": 0.6, "num_predict": 500},
         )
         return response["message"]["content"].strip()
     except Exception as e:
-        print(f"[ollama fail] {str(e)[:80]}")
+        print(f"[ollama] {str(e)[:80]}")
         return None
 
 
@@ -180,27 +219,33 @@ def ask_nova(user_message, history=None):
         history = []
 
     messages = [{"role": "system", "content": _get_system_prompt()}]
-    messages.extend(history[-6:])   # sirf recent 6
+    for h in history[-8:]:
+        messages.append(h)
     messages.append({"role": "user", "content": user_message})
 
-    # Groq pehle (fast), fail to Ollama
     raw = _call_groq(messages)
     if not raw:
         raw = _call_ollama(messages)
     if not raw:
-        return "Brain load nahi hui. Groq ya Ollama check karo."
+        return "Boss, dimaag load nahi hua. Thodi der baad try karo."
 
     parsed = _safe_parse(raw)
+
     if parsed is None:
-        return raw
+        clean = _fix_gender(raw)
+        clean = re.sub(r"\[TOOL:\w+\]", "", clean).strip()
+        return clean if clean else "Samajh nahi paya."
 
     tool_name = parsed.get("tool", "none")
     if tool_name and tool_name != "none" and tool_name in TOOLS:
         args = parsed.get("args", {}) or {}
         try:
-            return TOOLS[tool_name](args)
+            result = TOOLS[tool_name](args)
+            return str(result)
         except Exception as e:
-            return f"Tool {tool_name} fail: {e}"
+            return f"Tool {tool_name} fail: {str(e)[:100]}"
 
     reply = parsed.get("reply", "").strip()
+    if reply:
+        reply = _fix_gender(reply)
     return reply if reply else "Samajh nahi paya, dobara bolo."

@@ -1,0 +1,253 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NOVA — Your AI Companion</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-orb"></div>
+      <div>
+        <div class="logo-title">NOVA</div>
+        <div class="logo-sub">Your AI Companion</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a class="nav-item active" data-view="dashboard">
+        Dashboard
+      </a>
+      <a class="nav-item" data-view="chat">
+        Chat
+      </a>
+      <a class="nav-item" data-view="voice">
+        Voice
+      </a>
+      <a class="nav-item" data-view="apps">
+        Apps & Tools
+      </a>
+      <a class="nav-item" data-view="files">
+        Files
+      </a>
+      <a class="nav-item" data-view="automation">
+        Automation
+      </a>
+      <a class="nav-item" data-view="devices">
+        Devices
+      </a>
+      <a class="nav-item" data-view="tasks">
+        Tasks
+      </a>
+      <a class="nav-item" data-view="memory">
+        Memory
+      </a>
+      <a class="nav-item" data-view="notes">
+        Notes
+      </a>
+      <a class="nav-item" data-view="settings">
+        Settings
+      </a>
+    </nav>
+
+    <div class="quote">
+      <em>"Discipline today,<br>a better tomorrow."</em>
+      <div class="quote-brand">NOVA <span>v1.0.0</span></div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <header class="topbar">
+      <button class="sidebar-toggle" id="sidebarToggle" title="Toggle sidebar">☰</button>
+      <div class="greeting">
+        <div class="greet-time" id="greetTime">Good Evening,</div>
+        <div class="greet-name" id="greetName">Pappu!</div>
+        <div class="greet-sub">Your ideas. My intelligence. A better you.</div>
+      </div>
+      <div class="search-bar">
+        <span>🔍</span>
+        <input id="searchInput" placeholder="Search anything...">
+        <span class="kbd">Ctrl K</span>
+      </div>
+      <div class="topbar-right">
+        <button class="icon-btn" title="Notifications">🔔</button>
+        <div class="profile">
+          <div class="avatar">P</div>
+          <div>
+            <div class="p-name">Pappu Yadav</div>
+            <div class="p-status">● Online</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- HERO -->
+    <section class="hero">
+      <div class="hero-left">
+        <div class="hero-label">WELCOME BACK</div>
+        <h1 class="hero-title">Good Evening,<br><span>Pappu!</span></h1>
+        <div class="hero-sub">How can I help you today?</div>
+        <div class="waveform" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+      </div>
+
+      <div class="hero-center">
+        <div class="orb" id="novaOrb" title="Click to talk to NOVA">
+          <div class="orb-ring ring1"></div>
+          <div class="orb-ring ring2"></div>
+          <div class="orb-ring ring3"></div>
+          <div class="orb-core">
+            <div class="orb-text">NOVA</div>
+            <div class="orb-status" id="orbStatus"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-right">
+        <button class="quick-action" data-cmd="search web">
+          Search the Web
+        </button>
+        <button class="quick-action" data-cmd="open app">
+          Open an App
+        </button>
+        <button class="quick-action" data-cmd="summarize file">
+          Summarize a File
+        </button>
+        <button class="quick-action" data-cmd="control pc">
+          Control my PC
+        </button>
+        <button class="quick-action" data-cmd="create image">
+          Create an Image
+        </button>
+        <button class="quick-action" data-cmd="set reminder">
+          Set a Reminder
+        </button>
+      </div>
+    </section>
+
+    <!-- VOICE INPUT -->
+    <section class="voice-bar">
+      <div class="chip-row">
+        <button class="chip active" data-mode="chat">💬 Chat</button>
+        <button class="chip" data-mode="voice">🎙 Voice</button>
+        <button class="chip" data-mode="vision">📷 Vision</button>
+        <button class="chip" data-mode="code">&lt;/&gt; Code</button>
+        <button class="chip" data-mode="more">▦ More</button>
+      </div>
+      <div class="chat-window" id="chatWindow">
+        <div class="chat-empty" id="chatEmpty">
+          <div class="chat-empty-ico">💬</div>
+          <div>NOVA se kuch bhi pucho...</div>
+        </div>
+      </div>
+      <div class="voice-input">
+        <button class="mic-btn" id="micBtn" title="Voice mode">🎙</button>
+        <input id="chatInput" placeholder="Ask NOVA anything...">
+        <button class="send-btn" id="sendBtn">➤</button>
+      </div>
+      <div class="prompt-chips">
+        <button class="prompt-chip" data-cmd="plan my day">🌤 Plan my day</button>
+        <button class="prompt-chip" data-cmd="open vs code">💠 Open VS Code</button>
+        <button class="prompt-chip" data-cmd="explain this">💡 Explain this</button>
+        <button class="prompt-chip" data-cmd="what's the news today">🌐 What's the news today?</button>
+      </div>
+    </section>
+
+    <!-- BOTTOM CARDS -->
+    
+
+  </main>
+
+  <!-- RIGHT RAIL -->
+  <aside class="rail">
+
+    <div class="widget weather-widget">
+      <div class="w-date" id="wDate">Wed, 17 Sep 2026</div>
+      <div class="w-row">
+        <div class="w-time" id="wTime">09:41 PM</div>
+        <div class="w-temp" id="wTemp">28°C</div>
+      </div>
+      <div class="w-city" id="wCity">Jaipur, India</div>
+      <div class="w-cond" id="wCond">Clear Sky</div>
+    </div>
+
+    <div class="widget">
+      <div class="w-head">
+        <span>System Status</span>
+        <span class="live-tag">● Live</span>
+      </div>
+      <div class="rings">
+        <div class="ring-stat">
+          <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" class="ring-bg"/><circle cx="20" cy="20" r="16" class="ring-fg" id="ringCpu" stroke-dasharray="0 100"/></svg>
+          <div class="ring-val" id="valCpu">32%</div>
+          <div class="ring-lbl">CPU</div>
+        </div>
+        <div class="ring-stat">
+          <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" class="ring-bg"/><circle cx="20" cy="20" r="16" class="ring-fg" id="ringRam" stroke-dasharray="0 100"/></svg>
+          <div class="ring-val" id="valRam">54%</div>
+          <div class="ring-lbl">RAM</div>
+        </div>
+        <div class="ring-stat">
+          <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" class="ring-bg"/><circle cx="20" cy="20" r="16" class="ring-fg" id="ringDisk" stroke-dasharray="0 100"/></svg>
+          <div class="ring-val" id="valDisk">68%</div>
+          <div class="ring-lbl">Storage</div>
+        </div>
+        <div class="ring-stat">
+          <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" class="ring-bg"/><circle cx="20" cy="20" r="16" class="ring-fg" id="ringNet" stroke-dasharray="0 100"/></svg>
+          <div class="ring-val" id="valNet">12%</div>
+          <div class="ring-lbl">Network</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="widget">
+      <div class="w-head">
+        <span>Today's Tasks</span>
+        <span class="muted" id="taskCount">0/0</span>
+      </div>
+      <ul class="task-list" id="taskList"></ul>
+      <button class="add-task-btn" id="addTaskBtn">+ Add Task</button>
+    </div>
+
+    <div class="widget">
+      <div class="w-head">
+        <span>Recent Conversations</span>
+        <a class="view-all" href="#">View all</a>
+      </div>
+      <ul class="conv-list" id="convList"></ul>
+    </div>
+
+  </aside>
+
+</div>
+
+<div class="status-bar">
+  <span id="statusText">Ready</span>
+  <span class="status-bar-brand">NOVA — MORE THAN AN ASSISTANT. A COMPANION.</span>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+  // Sidebar toggle
+  document.getElementById("sidebarToggle").addEventListener("click", () => {
+    document.body.classList.toggle("sidebar-hidden");
+  });
+
+  // Orb click -> activate voice
+  document.getElementById("novaOrb").addEventListener("click", () => {
+    fetch("/api/voice/activate", { method: "POST" });
+  });
+</script>
+</body>
+</html>

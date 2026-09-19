@@ -9,6 +9,13 @@ import webbrowser
 import time
 
 try:
+    from reminders import tool_set_reminder, tool_list_reminders, tool_clear_reminders
+except Exception:
+    def tool_set_reminder(a): return 'Reminders load nahi hua.'
+    def tool_list_reminders(a=None): return 'Reminders load nahi hua.'
+    def tool_clear_reminders(a=None): return 'Reminders load nahi hua.'
+
+try:
     from memory import tool_remember, tool_recall, tool_forget, tool_note, tool_list_notes
 except Exception:
     def tool_remember(a): return 'Memory load nahi hui.'
@@ -466,6 +473,9 @@ TOOLS = {
     "type_text": type_text,
     "search_file": search_file,
     "web_search": web_search,
+    "set_reminder": tool_set_reminder,
+    "list_reminders": tool_list_reminders,
+    "clear_reminders": tool_clear_reminders,
     "remember": tool_remember,
     "recall": tool_recall,
     "forget": tool_forget,
