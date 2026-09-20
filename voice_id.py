@@ -62,11 +62,17 @@ def register_voice(audio_np, sample_rate=16000):
 
 
 def is_boss(audio_np, threshold=0.25):
-    if not os.path.exists(VOICE_DB):
+    # Development override
+    if os.environ.get("NOVA_ALLOW_ANY") == "1":
         return True
+
+    if not os.path.exists(VOICE_DB):
+        print("[voice_id] SECURITY: no voice print. Fail closed.")
+        return False
     emb = _embed(audio_np)
     if emb is None:
-        return True
+        print("[voice_id] SECURITY: embed failed. Fail closed.")
+        return False
     try:
         with open(VOICE_DB, "rb") as f:
             boss_emb = pickle.load(f)
@@ -78,6 +84,11 @@ def is_boss(audio_np, threshold=0.25):
     except Exception as e:
         print(f"[voice_id] compare fail: {e}")
         return False
+
+
+def is_enrolled():
+    """Check if user voice is registered."""
+    return os.path.exists(VOICE_DB)
 
 
 def has_voice():
