@@ -28,3 +28,4 @@ voices/
 gemini_model.txt
 *.log
 identity.json
+nova_memory.db
