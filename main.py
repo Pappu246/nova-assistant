@@ -1,5 +1,6 @@
 import sys
 import re
+import agent_state
 import time
 import threading
 from brain import ask_nova
@@ -119,6 +120,9 @@ def continuous_mode():
     from suno import listen, listen_continuous
     from bolo import speak, stop_speaking, start_esc_listener
 
+    state = agent_state.get_state()
+    state.set_mode("idle")
+
     start_esc_listener()
 
     if _HUD:
@@ -214,11 +218,17 @@ def continuous_mode():
         if any(w in low for w in ["stop", "ruko", "chup", "bas"]):
             continue
 
+        state.set_mode("thinking")
         reply = ask_nova(text, history)
+        state.record_tool_result(reply)
+        state.add_to_context("assistant", reply)
+
+        state.set_mode("speaking")
         if _HUD:
             hud.update("nova", reply)
             hud.update("status", "Bol raha hoon...")
         speak_with_interrupt(reply)
+        state.set_mode("idle")
         if _HUD:
             hud.update("status", "Ready")
 
@@ -296,8 +306,14 @@ def voice_mode():
         if any(w in low for w in ["stop", "ruko", "chup"]):
             continue
 
+        state = agent_state.get_state()
+        state.set_mode("thinking")
+        state.add_to_context("user", user_input)
         reply = ask_nova(user_input, history)
+        state.add_to_context("assistant", reply)
+        state.set_mode("speaking")
         speak_with_interrupt(reply)
+        state.set_mode("idle")
 
         history.append({"role": "user", "content": user_input})
         history.append({"role": "assistant", "content": reply})
