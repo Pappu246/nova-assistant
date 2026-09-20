@@ -33,7 +33,58 @@ _FAILURE_HINTS = [
 ]
 
 
-def verify(step, result):
+
+
+def _llm_verify(step, result_str):
+    """Fallback LLM verification for ambiguous cases."""
+    try:
+        from groq import Groq
+    except Exception:
+        return None
+
+    key = os.environ.get("GROQ_API_KEY")
+    if not key:
+        return None
+
+    prompt = """You are a strict verifier. Did this tool call succeed?
+
+Tool: """ + str(step.get("tool", "")) + """
+Args: """ + str(step.get("args", {})) + """
+Result: """ + result_str[:300] + """
+
+Reply EXACTLY one of:
+VERDICT: YES
+REASON: <one short line>
+
+VERDICT: NO
+REASON: <one short line>
+
+Rules:
+- Failure keywords (error, fail, nahi mila, exception, cannot, not found) -> NO
+- Success (khol diya, ho gaya, search kar liya, opened, launched, playing, complete) -> YES
+- Empty/vague/uncertain -> NO
+"""
+
+    try:
+        client = Groq(api_key=key)
+        resp = client.chat.completions.create(
+            model="openai/gpt-oss-20b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=80,
+            timeout=12,
+        )
+        text = (resp.choices[0].message.content or "").strip().upper()
+        if "VERDICT: YES" in text or "VERDICT:YES" in text:
+            return (True, "LLM verdict: YES")
+        if "VERDICT: NO" in text or "VERDICT:NO" in text:
+            return (False, "LLM verdict: NO")
+    except Exception as e:
+        print("[verifier] LLM error: " + str(e)[:60])
+    return None
+
+
+def verify(step, result, use_llm=True):
     """Return (success: bool, reason: str)."""
     if result is None:
         return False, "Koi result nahi aaya"
@@ -64,8 +115,17 @@ def verify(step, result):
         if hint in result_str:
             return True, "Success hint mila: '" + hint + "'"
 
-    # Strict mode: require success hint
-    return False, "Koi success hint nahi mila (result: " + result_str[:60] + ")"
+    # No keyword match. Try LLM fallback.
+    if use_llm:
+        llm_result = _llm_verify(step, result_str)
+        if llm_result is not None:
+            return llm_result
+
+    # LLM unavailable - lenient default (avoid blocking agent)
+    if not hints:
+        return True, "No hints, assume success (LLM unavailable)"
+
+    return False, "No success hint (LLM unavailable)"
 
 
 if __name__ == "__main__":

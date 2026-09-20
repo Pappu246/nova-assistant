@@ -1,4 +1,8 @@
-"""
+﻿with open("agent_loop.py", "r", encoding="utf-8") as f:
+    src = f.read()
+
+# New complete agent_loop.py content
+new_content = '''"""
 NOVA Agent Loop - Execute multi-step tasks with observe/verify/replan.
 """
 import time
@@ -57,7 +61,7 @@ def _build_replan_context(all_results, failed_step, failure_reason):
     lines.append("1. Do NOT repeat tool calls that already succeeded.")
     lines.append("2. Try a DIFFERENT approach for the failed step.")
     lines.append("3. If the goal is impossible, return an empty plan []. Otherwise, continue toward the goal.")
-    return "\n".join(lines)
+    return "\\n".join(lines)
 
 
 def _filter_plan(plan):
@@ -200,7 +204,7 @@ def run_task(goal, on_step=None):
         else:
             summary_lines.append("  FAIL: " + r["tool"] + " - " + str(r.get("reason", ""))[:50])
 
-    return "\n".join(summary_lines)
+    return "\\n".join(summary_lines)
 
 
 if __name__ == "__main__":
@@ -209,3 +213,8 @@ if __name__ == "__main__":
     import verifier
     import agent_state
     print("All imports OK")
+'''
+
+with open("agent_loop.py", "w", encoding="utf-8") as f:
+    f.write(new_content)
+print("agent_loop.py rewritten with replanning")
