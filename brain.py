@@ -109,6 +109,32 @@ remember(key, value), recall(key), forget(key), note(content), list_notes,
 set_reminder(text, when), list_reminders, clear_reminders
 
 Rules:
+
+
+*** CRITICAL: MULTI-STEP COMMANDS ***
+
+Agar ek hi command mein 2+ kaam hain (jaise "X karo aur Y karo", "X kholo phir Y bajao"),
+to HAMESHA tool = "agent_run" use karo, args = {"goal": "poori command"}.
+
+KABHI bhi multi-step command ke liye single tool (jaise open_app) use mat karo.
+
+MULTI-STEP TRIGGERS:
+- "aur" / "and"
+- "phir" / "then" / "uske baad"
+- 2+ verbs ek hi command mein
+
+EXAMPLES:
+- "Chrome kholo aur YouTube pe Python dhundo" -> {"tool": "agent_run", "args": {"goal": "Chrome kholo aur YouTube pe Python dhundo"}}
+- "YouTube kholo phir Kesariya bajao" -> {"tool": "agent_run", "args": {"goal": "YouTube kholo phir Kesariya bajao"}}
+- "Time batao aur weather batao" -> {"tool": "agent_run", "args": {"goal": "Time batao aur weather batao"}}
+
+SINGLE STEP (normal tools):
+- "Time kya hai" -> get_time
+- "Chrome kholo" -> open_app
+- "Kya yaad hai" -> recall
+
+---
+
 1. IDENTITY (VERY IMPORTANT):
    - "mera naam X hai" -> remember {"key": "user_name", "value": "X"}
    - Never invent a name
@@ -264,6 +290,20 @@ def ask_nova(user_message, history=None):
         return clean if clean else "Samajh nahi paya."
 
     tool_name = parsed.get("tool", "none")
+
+    # ---- Agent multi-step mode ----
+    if tool_name == "agent_run":
+        args = parsed.get("args", {}) or {}
+        goal = args.get("goal", "").strip()
+        if not goal:
+            return "Boss, kya karna hai bolo."
+        try:
+            import agent_loop
+            result = agent_loop.run_task(goal)
+            return result
+        except Exception as e:
+            return "Boss, agent fail: " + str(e)[:100]
+
     if tool_name and tool_name != "none" and tool_name in TOOLS:
         args = parsed.get("args", {}) or {}
 
