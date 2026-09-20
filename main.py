@@ -47,13 +47,19 @@ def speak_with_interrupt(text):
         stop_event.set()
 
 def get_user_name():
-    if memory:
-        try:
-            n = memory.get_fact("user_name")
-            if n:
-                return n
-        except Exception:
-            pass
+    """Get verified identity or fallback to 'Boss'."""
+    try:
+        import identity
+        return identity.get_name()
+    except Exception:
+        # Fallback: memory module
+        if memory:
+            try:
+                n = memory.get_fact("user_name")
+                if n:
+                    return n
+            except Exception:
+                pass
     return "Boss"
 
 def proactive_greeting():
@@ -130,10 +136,8 @@ def continuous_mode():
 
     name = "Boss"
     try:
-        import memory
-        n = memory.get_fact("user_name")
-        if n:
-            name = n
+        import identity
+        name = identity.get_name()
     except Exception:
         pass
 

@@ -108,7 +108,13 @@ remember(key, value), recall(key), forget(key), note(content), list_notes,
 set_reminder(text, when), list_reminders, clear_reminders
 
 Rules:
-1. MEMORY:
+1. IDENTITY (VERY IMPORTANT):
+   - "mera naam X hai" -> remember {"key": "user_name", "value": "X"}
+   - Never invent a name
+   - Never change user_name without user saying so
+   - If user asks "mera naam kya hai" and no name -> reply "Boss"
+
+2. MEMORY:
    - "mera naam X hai" -> remember user_name=X
    - "mera naam kya hai" -> recall user_name
    - "mere dost ka naam X" -> remember friend_name=X
