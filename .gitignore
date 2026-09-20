@@ -27,3 +27,4 @@ pretrained_models/
 voices/
 gemini_model.txt
 *.log
+identity.json
