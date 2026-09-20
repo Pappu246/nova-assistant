@@ -4,6 +4,7 @@ NOVA brain - Groq LLM + 26 tools + gender fix.
 import json
 import os
 import re
+import policy
 
 try:
     from groq import Groq
@@ -102,7 +103,7 @@ Tools:
 get_time, get_weather(city), open_app(app_name), take_screenshot, open_screenshots,
 play_youtube(query), browse(task), close_browser,
 volume_up, volume_down, volume_mute, next_track, prev_track, play_pause,
-lock_pc, shutdown_pc(mode), copy_to_clipboard(text), type_text(text),
+lock_pc, shutdown_pc(mode: STRICT 'shutdown'/'restart'/'cancel'), copy_to_clipboard(text), type_text(text),
 search_file(name, where), web_search(query),
 remember(key, value), recall(key), forget(key), note(content), list_notes,
 set_reminder(text, when), list_reminders, clear_reminders
@@ -224,6 +225,26 @@ def ask_nova(user_message, history=None):
     if history is None:
         history = []
 
+    # ---- STEP 1: Check for pending confirmation ----
+    pending = policy.get_pending()
+    if pending:
+        if policy.is_yes(user_message):
+            policy.clear_pending()
+            tool_name = pending["tool"]
+            args = pending["args"]
+            try:
+                result = TOOLS[tool_name](args)
+                return str(result)
+            except Exception as e:
+                return f"Boss, tool fail: {str(e)[:100]}"
+        elif policy.is_no(user_message):
+            policy.clear_pending()
+            return "Theek hai Boss, cancel kiya."
+        else:
+            # User said something else - clear pending and continue
+            policy.clear_pending()
+
+    # ---- STEP 2: Normal flow ----
     messages = [{"role": "system", "content": _get_system_prompt()}]
     for h in history[-8:]:
         messages.append(h)
@@ -245,6 +266,19 @@ def ask_nova(user_message, history=None):
     tool_name = parsed.get("tool", "none")
     if tool_name and tool_name != "none" and tool_name in TOOLS:
         args = parsed.get("args", {}) or {}
+
+        # ---- POLICY CHECK ----
+        # Blocked?
+        if policy.is_blocked(tool_name, args):
+            return "Boss, ye kaam blocked hai - nahi kar sakta."
+
+        # Requires confirmation?
+        if policy.requires_confirmation(tool_name, args):
+            policy.set_pending(tool_name, args)
+            msg = policy.make_confirmation_message(tool_name, args)
+            return f"{msg} Haan ya nahi bolo."
+
+        # Safe - execute immediately
         try:
             result = TOOLS[tool_name](args)
             return str(result)
