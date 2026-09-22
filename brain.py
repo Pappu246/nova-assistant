@@ -103,7 +103,7 @@ Tools:
 get_time, get_weather(city), open_app(app_name), take_screenshot, open_screenshots,
 play_youtube(query), browse(task), close_browser,
 volume_up, volume_down, volume_mute, next_track, prev_track, play_pause,
-lock_pc, shutdown_pc(mode: STRICT 'shutdown'/'restart'/'cancel'), copy_to_clipboard(text), type_text(text),
+lock_pc, shutdown_pc(mode: STRICT 'shutdown'/'restart'/'cancel'), copy_to_clipboard(text), type_text(text), vision_click(target),
 search_file(name, where), web_search(query),
 remember(key, value), recall(key), forget(key), note(content), list_notes,
 set_reminder(text, when), list_reminders, clear_reminders

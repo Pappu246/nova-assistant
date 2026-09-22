@@ -38,7 +38,8 @@ TOOL_POLICY = {
     "note": SAFE,
 
     # ASK - sensitive but reversible
-    "open_app": ASK,        # Could open anything
+    "open_app": ASK,
+    "vision_click": ASK,   # Clicks on screen, needs confirm        # Could open anything
     "browse": ASK,          # Browser automation may fill forms
     "type_text": ASK,       # Types into apps
     "copy_to_clipboard": ASK,
@@ -96,6 +97,7 @@ def make_confirmation_message(tool_name, args):
     """Human-readable confirmation prompt."""
     friendly = {
         "open_app": f"'{args.get('app_name', 'app')}' kholna hai?",
+        "vision_click": f"Screen pe '{args.get('target', 'kya')}' pe click karna hai?",
         "browse": f"Browser automation chalayein? Task: {args.get('task', 'unknown')}",
         "type_text": f"Type karna hai: '{args.get('text', '')[:30]}'?",
         "lock_pc": "PC lock karna hai?",

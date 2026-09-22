@@ -9,6 +9,11 @@ import webbrowser
 import time
 
 try:
+    from vision_agent import tool_vision_click
+except Exception:
+    def tool_vision_click(a): return 'Vision agent load nahi hua.'
+
+try:
     from reminders import tool_set_reminder, tool_list_reminders, tool_clear_reminders
 except Exception:
     def tool_set_reminder(a): return 'Reminders load nahi hua.'
@@ -473,6 +478,7 @@ TOOLS = {
     "type_text": type_text,
     "search_file": search_file,
     "web_search": web_search,
+    "vision_click": tool_vision_click,
     "set_reminder": tool_set_reminder,
     "list_reminders": tool_list_reminders,
     "clear_reminders": tool_clear_reminders,
