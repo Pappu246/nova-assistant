@@ -1,9 +1,13 @@
+"""
+NOVA - Voice assistant (continuous mode only, no wake word).
+"""
 import sys
 import re
 import agent_state
 import time
 import threading
 from brain import ask_nova
+
 try:
     import hud
     _HUD = True
@@ -16,6 +20,7 @@ try:
     import memory
 except Exception:
     memory = None
+
 
 def speak_with_interrupt(text):
     """Bol + parallel mein voice 'stop' sune."""
@@ -47,13 +52,12 @@ def speak_with_interrupt(text):
     finally:
         stop_event.set()
 
+
 def get_user_name():
-    """Get verified identity or fallback to 'Boss'."""
     try:
         import identity
         return identity.get_name()
     except Exception:
-        # Fallback: memory module
         if memory:
             try:
                 n = memory.get_fact("user_name")
@@ -62,6 +66,7 @@ def get_user_name():
             except Exception:
                 pass
     return "Boss"
+
 
 def proactive_greeting():
     import datetime
@@ -79,7 +84,6 @@ def proactive_greeting():
     else:
         greet = f"Good night {name}!"
 
-    # Natural follow-up question
     if h < 10:
         follow = "Aaj ka din shuru karein? Kya plan hai?"
     elif h < 17:
@@ -91,13 +95,14 @@ def proactive_greeting():
 
     return f"{greet} Main NOVA hoon. {follow}"
 
+
 # ============ TEXT INPUT READER ============
 
 _typed_queue = []
 _typed_lock = threading.Lock()
 
+
 def _text_input_reader():
-    """Terminal se text padho - background thread."""
     while True:
         try:
             line = input()
@@ -109,16 +114,20 @@ def _text_input_reader():
         except Exception:
             break
 
+
 def _get_typed():
     with _typed_lock:
         if _typed_queue:
             return _typed_queue.pop(0)
     return None
 
+
+# ============ CONTINUOUS MODE (DEFAULT) ============
+
 def continuous_mode():
-    """Continuous - 'Hey Jarvis' ki zaroorat nahi. Sirf bolo, kaam kare."""
-    from suno import listen, listen_continuous
-    from bolo import speak, stop_speaking, start_esc_listener
+    """Continuous mode - no wake word. Sirf bolo, kaam kare. Sirf teri awaaz sunta hai."""
+    from suno import listen_continuous
+    from bolo import start_esc_listener
 
     state = agent_state.get_state()
     state.set_mode("idle")
@@ -133,19 +142,14 @@ def continuous_mode():
             pass
 
     print("=" * 55)
-    print("  NOVA Continuous Mode")
-    print("  'Hey Jarvis' ki zaroorat nahi - bas bolo")
-    print("  'stop' / 'ruko' - ruk jao | 'so jao' - sleep")
+    print("  NOVA - Ready")
+    print("  Seedha bolo, kaam karein")
+    print("  'stop' / 'ruko' - ruk jao")
+    print("  'so jao' - standby")
     print("=" * 55)
 
-    name = "Boss"
-    try:
-        import identity
-        name = identity.get_name()
-    except Exception:
-        pass
+    name = get_user_name()
 
-    # Start text input reader (background)
     threading.Thread(target=_text_input_reader, daemon=True).start()
     print("[input] Terminal mein type karo aur Enter dabao")
 
@@ -165,13 +169,9 @@ def continuous_mode():
         print(f"[reminders] fail: {e}")
 
     history = []
-    
-    # SLEEP removed
+    standby = False
 
     while True:
-        # Sleep disabled
-
-        # Check typed input first (higher priority)
         typed = _get_typed()
         if typed:
             text = typed
@@ -183,41 +183,44 @@ def continuous_mode():
         if not text:
             continue
 
-        
         print(f"Tum: {text}")
         if _HUD:
             hud.update("user", text)
             hud.update("status", "Soch raha hoon...")
 
         low = text.lower().strip()
-
         low_clean = re.sub(r"[^a-z ]", "", low)
         low_clean = re.sub(r"\s+", " ", low_clean).strip()
 
+        # ---- STANDBY MODE ----
         sleep_keywords = ["so jao", "soja", "soo jao", "su jao", "sujao",
                           "gojao", "so jaa", "sleep", "band ho ja",
                           "chup ho ja", "shant ho ja", "good night"]
         is_sleep = any(w in low_clean for w in sleep_keywords)
 
         if is_sleep:
-            print("[continuous] Sleep command detected")
-            speak_with_interrupt("Theek hai Boss, standby pe ja raha hoon.")
-            from wake import wait_for_wake_word
-            while True:
-                woke = wait_for_wake_word(timeout_sec=90)
-                if woke:
-                    speak_with_interrupt("Wapas aa gaya!")
-                    break
-            
+            print("[continuous] Standby mode. Bolne pe wapas active hoga.")
+            speak_with_interrupt("Theek hai Boss, standby pe ja raha hoon. Jab bologe wapas active ho jaunga.")
+            standby = True
             continue
 
+        # ---- WAKE FROM STANDBY (any speech resumes) ----
+        if standby:
+            print("[continuous] Wapas active")
+            speak_with_interrupt("Wapas aa gaya!")
+            standby = False
+            continue
+
+        # ---- BYE ----
         if any(w in low for w in ["bye", "goodbye", "shutdown"]):
             speak_with_interrupt("Theek hai Boss, milte hain!")
             break
 
+        # ---- STOP ----
         if any(w in low for w in ["stop", "ruko", "chup", "bas"]):
             continue
 
+        # ---- PROCESS ----
         state.set_mode("thinking")
         reply = ask_nova(text, history)
         state.record_tool_result(reply)
@@ -237,88 +240,6 @@ def continuous_mode():
         if len(history) > 20:
             history = history[-20:]
 
-def voice_mode():
-    from suno import listen
-    from wake import wait_for_wake_word
-
-    start_esc_listener()
-
-    if _HUD:
-        try:
-            hud.start()
-            hud.update("status", "Ready")
-        except Exception as e:
-            print(f"[hud start fail] {e}")
-
-    print("=" * 55)
-    print("  NOVA — 'Hey Jarvis' bolo ya seedha baat karo")
-    print("  Esc = stop")
-    print("=" * 55)
-
-    # Proactive greeting
-    greeting = proactive_greeting()
-    speak_with_interrupt(greeting)
-
-    try:
-        import reminders
-        def _on_reminder_fire(text):
-            try:
-                speak_with_interrupt(f"Boss, reminder: {text}")
-            except Exception:
-                pass
-        reminders.start_watcher(_on_reminder_fire)
-    except Exception:
-        pass
-
-    # Screen watcher start
-    try:
-        import screen_watcher
-        def on_screen_msg(msg):
-            try:
-                speak_with_interrupt(msg)
-            except Exception as e:
-                print(f"[screen-speak fail] {e}")
-        screen_watcher.start_watching(on_screen_msg, interval=30)
-        print("[screen-watcher] Active")
-    except Exception as e:
-        print(f"[screen-watcher fail] {e}")
-
-    history = []
-    while True:
-        print("\n>>> 'Hey Jarvis' bolo...")
-        woke = wait_for_wake_word(timeout_sec=60)
-        if not woke:
-            continue
-
-        print(">>> Sun raha hoon...")
-        user_input = listen()
-
-        if not user_input:
-            continue
-
-        print(f"Tum: {user_input}")
-
-        low = user_input.lower()
-        if any(w in low for w in ("bye", "goodbye", "band karo", "shutdown")):
-            speak_with_interrupt("Theek hai Boss, milte hain!")
-            break
-
-        if any(w in low for w in ["stop", "ruko", "chup"]):
-            continue
-
-        state = agent_state.get_state()
-        state.set_mode("thinking")
-        state.add_to_context("user", user_input)
-        reply = ask_nova(user_input, history)
-        state.add_to_context("assistant", reply)
-        state.set_mode("speaking")
-        speak_with_interrupt(reply)
-        state.set_mode("idle")
-
-        history.append({"role": "user", "content": user_input})
-        history.append({"role": "assistant", "content": reply})
-        if len(history) > 20:
-            history = history[-20:]
 
 def text_mode():
     print("NOVA - text mode")
@@ -336,10 +257,10 @@ def text_mode():
         if len(history) > 20:
             history = history[-20:]
 
+
 if __name__ == "__main__":
-    if "--continuous" in sys.argv:
-        continuous_mode()
-    elif "--text" in sys.argv:
+    if "--text" in sys.argv:
         text_mode()
     else:
-        voice_mode()
+        # Default: continuous mode (no wake word)
+        continuous_mode()
