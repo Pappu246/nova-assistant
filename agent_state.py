@@ -1,4 +1,4 @@
-﻿"""
+"""
 NOVA Agent State - single source of truth for runtime state.
 
 Used by:

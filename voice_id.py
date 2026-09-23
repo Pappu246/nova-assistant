@@ -1,4 +1,4 @@
-﻿"""
+"""
 NOVA Voice ID v3 - speechbrain ECAPA.
 """
 import os

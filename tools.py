@@ -1,4 +1,6 @@
-﻿import subprocess
+import app_control
+import vision_control
+import subprocess
 import platform
 import datetime
 import urllib.request
@@ -550,4 +552,19 @@ TOOLS = {
     "forget": tool_forget,
     "note": tool_note,
     "list_notes": tool_list_notes,
+
+    "click_text":       lambda a: vision_control.click_text(a.get("target", ""), a.get("nth", 0)),
+    "double_click_text": lambda a: vision_control.double_click_text(a.get("target", ""), a.get("nth", 0)),
+    "right_click_text": lambda a: vision_control.right_click_text(a.get("target", ""), a.get("nth", 0)),
+    "read_screen":      lambda a: vision_control.read_screen(),
+    "find_on_screen":   lambda a: str(vision_control.find_text_on_screen(a.get("target", ""))),
+    "close_app": lambda a: app_control.close_app(a.get("name", "")),
+    "focus_window": lambda a: app_control.focus_window(a.get("title", "")),
+    "list_windows": lambda a: app_control.list_windows(),
+    "press_key": lambda a: app_control.press_key(a.get("key", "")),
+    "youtube_search": lambda a: app_control.youtube_search(a.get("query", "")),
+    "google_search": lambda a: app_control.google_search(a.get("query", "")),
+    "open_url": lambda a: app_control.open_url(a.get("url", "")),
+    "screenshot": lambda a: app_control.screenshot(a.get("path")),
+    "mute": lambda a: app_control.mute(),
 }

@@ -1,4 +1,4 @@
-﻿"""
+"""
 NOVA HUD v3 - Compact circular floating orb.
 """
 import tkinter as tk

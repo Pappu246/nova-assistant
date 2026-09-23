@@ -1,4 +1,4 @@
-﻿"""
+"""
 NOVA Planner - decompose a goal into executable steps using LLM.
 """
 import os

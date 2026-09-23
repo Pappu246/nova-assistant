@@ -1,4 +1,4 @@
-﻿"""
+"""
 NOVA ki awaaz - stop support ke saath.
 """
 import os

@@ -1,4 +1,4 @@
-﻿"""
+"""
 NOVA Reminders - time-based yaad dilana.
 """
 import os

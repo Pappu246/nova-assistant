@@ -1,4 +1,4 @@
-﻿"""
+"""
 NOVA Vision Agent - screen dekh ke click karo.
 Workflow: Screenshot -> Gemini Vision -> Click -> Screenshot verify
 """

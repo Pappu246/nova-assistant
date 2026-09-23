@@ -1,4 +1,4 @@
-﻿"""
+"""
 NOVA Identity Manager - reliable user identity storage.
 
 Rules:

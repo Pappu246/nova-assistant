@@ -1,4 +1,4 @@
-﻿"""
+"""
 NOVA Verifier - verify if a step succeeded based on result/observation.
 """
 import os
