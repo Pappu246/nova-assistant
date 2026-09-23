@@ -33,3 +33,7 @@ nova_memory.db
 *.bak
 rt_speak_*_backup.py
 rt_stt_local_backup.py
+
+# Backup files
+*.bak
+*_backup.py
