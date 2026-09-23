@@ -1,204 +1,247 @@
 """
-NOVA Real-Time TTS - streaming sentence-by-sentence.
-LLM ke tokens buffer karta, sentence complete hone pe turant bolta.
-Parallel queue - bolna chalta rahe jab tak naye tokens aa rahe.
+NOVA Real-Time TTS - soundfile version (pygame-free)
+- edge-tts generates MP3
+- soundfile reads MP3 (libsndfile)
+- sounddevice plays it
+- ESC key = stop (background listener)
 """
 import os
-import re
-import tempfile
 import time
-import threading
 import queue
+import tempfile
+import threading
+import asyncio
 
 import numpy as np
 
+# ---------- soundfile + sounddevice ----------
+_SF = False
+_SD = False
+try:
+    import soundfile as sf
+    _SF = True
+except Exception as e:
+    print("[rt_speak] soundfile FAIL:", str(e)[:60])
+try:
+    import sounddevice as sd
+    _SD = True
+except Exception as e:
+    print("[rt_speak] sounddevice FAIL:", str(e)[:60])
+
+# ---------- edge-tts ----------
+_EDGE = False
 try:
     import edge_tts
     _EDGE = True
-except Exception:
-    _EDGE = False
+except Exception as e:
+    print("[rt_speak] edge-tts FAIL:", str(e)[:60])
 
+# ---------- ESC key listener ----------
+_ESC_MODE = None
 try:
-    from playsound3 import playsound
-    _PLAY = True
+    import keyboard as _kb
+    _ESC_MODE = "keyboard"
 except Exception:
-    _PLAY = False
+    try:
+        from pynput import keyboard as _pk
+        _ESC_MODE = "pynput"
+    except Exception:
+        _ESC_MODE = None
 
-try:
-    import pygame
-    _PYGAME = True
-except Exception:
-    _PYGAME = False
+print("[rt_speak] ESC:", _ESC_MODE, "| soundfile:", _SF, "| sounddevice:", _SD, "| edge:", _EDGE)
 
 
-VOICE = "hi-IN-MadhurNeural"
-RATE = "+5%"
-PITCH = "+0Hz"
-
-# Stop flag for barge-in
-_stop_flag = threading.Event()
+# ---------- State ----------
 _speaking_flag = threading.Event()
+_stop_flag = threading.Event()
+_speak_queue = queue.Queue()
+_worker = None
+_esc_thread = None
+_esc_active = False
+_current_process = None
+
+
+# ---------- Stop ----------
+def _do_stop():
+    global _current_process
+    if _SD:
+        try:
+            sd.stop()
+        except Exception:
+            pass
+    if _current_process is not None:
+        try:
+            _current_process.terminate()
+        except Exception:
+            pass
+        _current_process = None
 
 
 def stop_speaking():
-    """Barge-in: TTS turant rok do."""
     _stop_flag.set()
-    try:
-        if _PYGAME and pygame.mixer.get_init():
-            pygame.mixer.music.stop()
-            try:
-                pygame.mixer.music.unload()
-            except Exception:
-                pass
-    except Exception:
-        pass
+    _do_stop()
 
 
 def is_speaking():
     return _speaking_flag.is_set()
 
 
-def _clean_for_speech(text):
-    """Emoji, markdown cleanup for TTS."""
-    if not text:
-        return ""
-    t = text
-    # Remove markdown
-    t = re.sub(r"```[\s\S]*?```", " code block ", t)
-    t = re.sub(r"`([^`]*)`", r"\1", t)
-    t = re.sub(r"\*\*([^*]+)\*\*", r"\1", t)
-    t = re.sub(r"\*([^*]+)\*", r"\1", t)
-    t = re.sub(r"^#+\s*", "", t, flags=re.MULTILINE)
-    t = re.sub(r"\|", " ", t)
-    t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)
-    t = re.sub(r"https?://\S+", " link ", t)
-    # Remove emoji
+# ---------- ESC watcher ----------
+def _esc_loop():
+    global _esc_active
+    if _ESC_MODE == "keyboard":
+        while _esc_active:
+            try:
+                if _kb.is_pressed("esc"):
+                    print("\n[rt_speak] *** ESC pressed ***")
+                    _stop_flag.set()
+                    _do_stop()
+                    time.sleep(0.3)
+            except Exception:
+                pass
+            time.sleep(0.05)
+    elif _ESC_MODE == "pynput":
+        def on_press(key):
+            if key == _pk.Key.esc:
+                print("\n[rt_speak] *** ESC pressed ***")
+                _stop_flag.set()
+                _do_stop()
+        with _pk.Listener(on_press=on_press) as listener:
+            while _esc_active:
+                time.sleep(0.1)
+            listener.stop()
+
+
+def _start_esc():
+    global _esc_thread, _esc_active
+    if _ESC_MODE is None or _esc_active:
+        return
+    _esc_active = True
+    _esc_thread = threading.Thread(target=_esc_loop, daemon=True)
+    _esc_thread.start()
+
+
+def _stop_esc():
+    global _esc_active
+    _esc_active = False
+
+
+# ---------- edge-tts ----------
+async def _edge_save(text, path):
+    communicate = edge_tts.Communicate(text, "hi-IN-MadhurNeural")
+    await communicate.save(path)
+
+
+def _edge_to_file(text, path):
+    if not _EDGE:
+        return False
     try:
-        emoji = re.compile(
-            "["
-            "\U0001F600-\U0001F64F"
-            "\U0001F300-\U0001F5FF"
-            "\U0001F680-\U0001F6FF"
-            "\U0001F1E0-\U0001F1FF"
-            "\U00002700-\U000027BF"
-            "\U0001F900-\U0001F9FF"
-            "\U0001FA00-\U0001FAFF"
-            "\U00002600-\U000026FF"
-            "]+",
-            flags=re.UNICODE,
-        )
-        t = emoji.sub("", t)
-    except Exception:
-        pass
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-
-def _edge_tts_to_file(text, path):
-    """Generate MP3 file with edge-tts."""
-    try:
-        import asyncio
-
-        async def _gen():
-            c = edge_tts.Communicate(text, VOICE, rate=RATE, pitch=PITCH)
-            await c.save(path)
-
-        asyncio.run(_gen())
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(_edge_save(text, path))
+        finally:
+            loop.close()
         return os.path.exists(path) and os.path.getsize(path) > 500
     except Exception as e:
-        print("[rt_speak] edge-tts fail: " + str(e)[:60])
+        print("[rt_speak] edge fail:", str(e)[:80])
         return False
 
 
-def _play_and_wait(path):
-    """Play MP3 and wait. Respects stop flag for barge-in."""
-    if _PLAY:
-        try:
-            playsound(path, block=True)
-            return True
-        except Exception as e:
-            print("[rt_speak] playsound fail: " + str(e)[:60])
-
-    if _PYGAME:
-        try:
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
-            pygame.mixer.music.load(path)
-            pygame.mixer.music.set_volume(0.7)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                if _stop_flag.is_set():
-                    pygame.mixer.music.stop()
-                    return True
-                pygame.time.wait(60)
-            try:
-                pygame.mixer.music.unload()
-            except Exception:
-                pass
-            return True
-        except Exception as e:
-            print("[rt_speak] pygame fail: " + str(e)[:60])
-    return False
-
-
-# ============ SPEAK WORKER (QUEUE) ============
-
-_speak_queue = queue.Queue()
-_worker_started = False
-
-
-def _speak_worker():
-    """Background worker: pull sentences, speak them."""
-    while True:
-        item = None
-        try:
-            item = _speak_queue.get()
-            if item is None:
-                _speak_queue.task_done()
-                break
-
-            text, done_callback = item
-            print("[rt_speak] speaking: " + text[:60])
-
+# ---------- SAPI fallback (offline) ----------
+def _sapi_speak(text):
+    global _current_process
+    try:
+        import platform, subprocess
+        if platform.system() != "Windows":
+            return False
+        safe = text.replace("'", "''")
+        ps = (
+            "Add-Type -AssemblyName System.Speech;"
+            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+            "$s.Rate = 1;"
+            "$s.Speak('" + safe + "');"
+        )
+        _current_process = subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command", ps],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        while _current_process.poll() is None:
             if _stop_flag.is_set():
-                if done_callback:
-                    done_callback()
-                _speak_queue.task_done()
+                _current_process.terminate()
+                break
+            time.sleep(0.1)
+        _current_process = None
+        return True
+    except Exception as e:
+        print("[rt_speak] SAPI fail:", str(e)[:60])
+        _current_process = None
+        return False
+
+
+# ---------- Playback via sounddevice ----------
+def _play(path):
+    if not (_SF and _SD):
+        return
+    try:
+        data, sr = sf.read(path, dtype="float32")
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        sd.play(data, sr)
+        # poll for stop
+        stream = sd.get_stream()
+        while stream is not None and stream.active:
+            if _stop_flag.is_set():
+                sd.stop()
+                break
+            time.sleep(0.03)
+    except Exception as e:
+        print("[rt_speak] play fail:", str(e)[:80])
+
+
+# ---------- Worker ----------
+def _worker_loop():
+    while True:
+        item = _speak_queue.get()
+        if item is None:
+            _speak_queue.task_done()
+            break
+        text, done_cb = item
+        try:
+            if not text or not text.strip():
+                if done_cb:
+                    done_cb()
                 continue
 
-            text = _clean_for_speech(text)
-            if not text:
-                if done_callback:
-                    done_callback()
-                _speak_queue.task_done()
-                continue
-
+            _stop_flag.clear()
             _speaking_flag.set()
+            _start_esc()
 
             path = os.path.join(
                 tempfile.gettempdir(),
-                "nova_rt_" + str(int(time.time() * 1000)) + ".mp3",
+                "nova_tts_" + str(int(time.time() * 1000)) + ".mp3",
             )
 
-            if _edge_tts_to_file(text, path):
-                print("[rt_speak] playing: " + path)
-                _play_and_wait(path)
+            if _edge_to_file(text, path):
+                print("[rt_speak] speak:", text[:60])
+                _play(path)
                 try:
                     os.remove(path)
                 except Exception:
                     pass
             else:
-                print("[rt_speak] TTS gen failed")
+                print("[rt_speak] edge failed -> SAPI fallback")
+                _sapi_speak(text)
 
             _speaking_flag.clear()
-            if done_callback:
-                done_callback()
-
+            _stop_esc()
+            if done_cb:
+                done_cb()
         except Exception as e:
-            print("[rt_speak] worker error: " + str(e)[:80])
+            print("[rt_speak] worker err:", str(e)[:80])
             _speaking_flag.clear()
+            _stop_esc()
         finally:
-            # CRITICAL: always mark done
             try:
                 _speak_queue.task_done()
             except Exception:
@@ -206,108 +249,42 @@ def _speak_worker():
 
 
 def _ensure_worker():
-    global _worker_started
-    if _worker_started:
-        return
-    _worker_started = True
-    t = threading.Thread(target=_speak_worker, daemon=True)
-    t.start()
+    global _worker
+    if _worker is None or not _worker.is_alive():
+        _worker = threading.Thread(target=_worker_loop, daemon=True)
+        _worker.start()
 
 
-def enqueue(text, done_callback=None):
-    """Add text to speak queue."""
+# ---------- Public API ----------
+def speak(text, done_callback=None, block=False):
     _ensure_worker()
     _speak_queue.put((text, done_callback))
+    if block:
+        _speak_queue.join()
 
 
-def speak_streaming(token_iterator):
-    """
-    Consume a token iterator, speak sentence-by-sentence.
-
-    Args:
-        token_iterator: yields (type, data) tuples - same as rt_brain.stream_reply
-                       ('token', 'chunk'), ('done', 'full'), ('error', 'msg')
-
-    Returns: full text (str)
-    """
-    _ensure_worker()
-    _stop_flag.clear()
-
-    sentence_buffer = ""
-    full_text = ""
-    SENTENCE_MIN = 15       # min chars before considering flush
-    SENTENCE_END = re.compile(r"[.!?।]\s*$")
-
-    for event in token_iterator:
-        etype = event[0]
-
-        if etype == "token":
-            chunk = event[1]
-            sentence_buffer += chunk
-            full_text += chunk
-
-            # Flush at sentence boundary OR when buffer grows too long
-            stripped = sentence_buffer.strip()
-            if stripped and (
-                SENTENCE_END.search(stripped)
-                or len(stripped) >= 80
-            ):
-                enqueue(stripped)
-                sentence_buffer = ""
-
-        elif etype == "done":
-            # Flush remaining
-            if sentence_buffer.strip():
-                enqueue(sentence_buffer.strip())
-                sentence_buffer = ""
-
-            # Wait for queue to drain
-            _speak_queue.join()
-            return full_text
-
-        elif etype == "error":
-            print("[rt_speak] error: " + event[1])
-
-    if sentence_buffer.strip():
-        enqueue(sentence_buffer.strip())
+def wait_until_done():
     _speak_queue.join()
-    return full_text
 
 
-# ============ TEST ============
-
+# ---------- Test ----------
 if __name__ == "__main__":
-    print("=" * 55)
-    print("  rt_speak.py TEST")
-    print("=" * 55)
+    print()
+    print("=" * 50)
+    print("  TEST: 10-second speech")
+    print("  Press ESC anytime to STOP")
+    print("=" * 50)
     print()
 
-    # Test 1: Direct speak
-    print("Test 1: Direct speak")
-    _ensure_worker()
-    enqueue("Namaste Boss, main NOVA hoon.")
-    enqueue("Aaj mausam bahut accha hai.")
-    _speak_queue.join()
-    print("  Done")
-    print()
+    speak(
+        "Yeh ek lamba test hai. Agar tum ESC key dabao "
+        "toh main turant ruk jaunga. Warna main das second "
+        "baad khud ruk jaunga. ESC background mein sun raha hoon."
+    )
 
-    # Test 2: Streaming (simulated)
-    print("Test 2: Streaming tokens (sentence-by-sentence)")
-    def fake_tokens():
-        chunks = [
-            "Chrome kholne ", "ke liye ", "confirm ", "karna ",
-            "hai Boss. ", "Haan ", "ya ", "nahi ", "bolo.",
-            " Aap bhi ", "theek hain ", "na?",
-        ]
-        import time as t
-        for c in chunks:
-            yield ("token", c)
-            t.sleep(0.08)
-        yield ("done", "")
+    for i in range(150):
+        if not is_speaking() and _speak_queue.empty():
+            break
+        time.sleep(0.1)
 
-    t0 = time.time()
-    full = speak_streaming(fake_tokens())
-    print("  Full text: " + full)
-    print("  Time: " + str(round(time.time() - t0, 2)) + "s")
-    print()
-    print("=" * 55)
+    print("Test done.")
