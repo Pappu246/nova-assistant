@@ -9,6 +9,19 @@ import webbrowser
 import time
 
 try:
+    from live_data import get_live_answer, get_news, get_crypto, get_stock
+except Exception:
+    def get_live_answer(q): return 'Live data not loaded.'
+    def get_news(t='top', limit=5): return 'News not loaded.'
+    def get_crypto(c): return 'Crypto not loaded.'
+    def get_stock(s): return 'Stock not loaded.'
+
+try:
+    from smart_click import smart_action as _smart_action_fn
+except Exception:
+    def _smart_action_fn(intent, target=None): return {'ok': False, 'reason': 'smart_click not loaded'}
+
+try:
     from vision_agent import tool_vision_click
 except Exception:
     def tool_vision_click(a): return 'Vision agent load nahi hua.'
@@ -456,6 +469,51 @@ def close_browser(_args=None):
 
 
 
+
+def smart_action(args):
+    """Wrapper for smart_click.smart_action."""
+    intent = args.get("intent", "")
+    target = args.get("target", None)
+    if not intent:
+        return "Intent missing"
+    r = _smart_action_fn(intent, target)
+    if r.get("ok"):
+        return "Ho gaya (" + r.get("method", "") + "): " + r.get("reason", "")
+    return "Fail: " + r.get("reason", "unknown")
+
+
+
+# ============ LIVE DATA TOOLS ============
+
+def live_data(args):
+    """Get live/current info - news, crypto, stock, current events, 'who is X'."""
+    query = args.get("query", "").strip()
+    if not query:
+        return "Kya live data chahiye?"
+    return get_live_answer(query)
+
+
+def live_news(args):
+    """Get news headlines. Args: {topic, limit}."""
+    topic = args.get("topic", "top")
+    limit = int(args.get("limit", 5))
+    return get_news(topic, limit)
+
+
+def live_crypto(args):
+    """Get crypto price. Args: {coin}."""
+    coin = args.get("coin", "bitcoin")
+    return get_crypto(coin)
+
+
+def live_stock(args):
+    """Get stock price. Args: {symbol}."""
+    symbol = args.get("symbol", "")
+    if not symbol:
+        return "Kaunsa stock? Jaise 'tesla', 'apple'"
+    return get_stock(symbol)
+
+
 TOOLS = {
     "get_time": get_time,
     "get_weather": get_weather,
@@ -478,6 +536,11 @@ TOOLS = {
     "type_text": type_text,
     "search_file": search_file,
     "web_search": web_search,
+    "live_data": live_data,
+    "live_news": live_news,
+    "live_crypto": live_crypto,
+    "live_stock": live_stock,
+    "smart_action": smart_action,
     "vision_click": tool_vision_click,
     "set_reminder": tool_set_reminder,
     "list_reminders": tool_list_reminders,
