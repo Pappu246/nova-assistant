@@ -34,12 +34,17 @@ TOOL_SPECS = {
     "open_app": "Open application/folder/website. Args: {app_name: str}. Examples: chrome, notepad, calculator, downloads, youtube, gmail",
     "take_screenshot": "Take screen screenshot. Args: {}",
     "open_screenshots": "Open screenshots folder. Args: {}",
-    "play_youtube": "Play a song/video on YouTube. Args: {query: str}",
+    "play_youtube": "Play a song/video on YouTube - OPENS FIRST VIDEO DIRECTLY. Args: {query: str}. USE FOR 'gaana bajao', 'song chalao', 'youtube pe X chalao'",
     "browse": "Browser automation - search web, click, fill forms, extract info. Args: {task: str}. Use for multi-step web tasks.",
     "close_browser": "Close the automation browser. Args: {}",
     "volume_up": "Increase system volume. Args: {steps: int}",
     "volume_down": "Decrease system volume. Args: {steps: int}",
-    "volume_mute": "Mute/unmute. Args: {}",
+    "volume_mute": "EXPLICIT mute (not toggle). Args: {}. Use ONLY for 'mute karo'.",
+    "volume_unmute": "EXPLICIT unmute. Args: {}. Use ONLY for 'unmute karo', 'awaaz wapas lao'.",
+    "toggle_mute": "Toggle mute/unmute. Args: {}. Use for 'mute toggle karo'.",
+    "mute": "Explicit mute. Args: {}. Same as volume_mute.",
+    "unmute": "Explicit unmute. Args: {}. Same as volume_unmute.",
+    "is_muted": "Check if muted. Args: {}",
     "play_pause": "Toggle play/pause on active media. Args: {}",
     "next_track": "Next media track. Args: {}",
     "prev_track": "Previous media track. Args: {}",
@@ -57,7 +62,10 @@ TOOL_SPECS = {
     "set_reminder": "Schedule a reminder. Args: {text: str, when: str}. Example: {text: 'chai peena', when: '5 minute baad'}",
     "list_reminders": "List active reminders. Args: {}",
     "clear_reminders": "Delete all reminders. Args: {}",
-    "vision_click": "Find a UI element on screen and click it. Args: {target: str}. Use ONLY when user explicitly says 'click on X' where X is a specific visual element.",
+    "vision_click": "Find a UI element on screen (ACTIVE WINDOW) and click it. Uses VLM (Groq Vision). Args: {target: str, dry_run: bool}. Use when user says 'X pe click karo', 'play button dabao'.",
+    "click_text": "OCR-based click text in ACTIVE WINDOW (not whole screen). Args: {target: str, nth: int}. Faster than vision_click for text.",
+    "read_screen": "OCR read ACTIVE WINDOW text. Args: {}",
+    "find_on_screen": "Find text in ACTIVE WINDOW. Args: {target: str}",
     "smart_action": "Keyboard shortcuts for common tasks (save, copy, paste, undo, fullscreen). Args: {intent: str}",
 }
 
@@ -198,6 +206,17 @@ def _extract_json(text):
         return None
 
 
+def _get_memory_snippet():
+    try:
+        import memory
+        ctx = memory.get_memory_context(max_facts=8, max_convos=2)
+        if ctx:
+            return "\n\n[Memory about Boss]:\n" + ctx
+    except Exception:
+        pass
+    return ""
+
+
 def think(user_message, history=None, strict_json=True):
     """
     Main thinking function. Returns decision dict.
@@ -215,6 +234,10 @@ def think(user_message, history=None, strict_json=True):
 
     tool_list = _build_tool_list()
     system_prompt = SYSTEM_PROMPT_TEMPLATE.replace("{tool_list}", tool_list)
+    # Inject long-term memory (Issue 2 fix)
+    mem = _get_memory_snippet()
+    if mem:
+        system_prompt += mem
 
     messages = [{"role": "system", "content": system_prompt}]
     if history:

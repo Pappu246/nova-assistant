@@ -26,6 +26,13 @@ from think import TOOL_SPECS, SYSTEM_PROMPT_TEMPLATE, _build_tool_list, _extract
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_FALLBACK = "openai/gpt-oss-20b"
 
+def _save_mem(user_text, nova_text):
+    try:
+        import memory
+        memory.log_conversation(user_text, nova_text)
+    except Exception:
+        pass
+
 
 def stream_reply(user_text, history=None):
     """
@@ -81,6 +88,19 @@ def stream_reply(user_text, history=None):
 
     tool_list = _build_tool_list()
     system_prompt = SYSTEM_PROMPT_TEMPLATE.replace("{tool_list}", tool_list)
+    # Long-term memory injection (Issue 2 fix)
+    try:
+        import memory as _mem
+        mem_ctx = _mem.get_memory_context(max_facts=8, max_convos=2)
+        if mem_ctx:
+            system_prompt += "\n\n[Memory about Boss]:\n" + mem_ctx
+        # Auto-extract facts from current input (proactive learning)
+        try:
+            _mem.auto_extract(user_text)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
     messages = [{"role": "system", "content": system_prompt}]
     for h in history[-6:]:
@@ -115,6 +135,7 @@ def stream_reply(user_text, history=None):
                 reply = buffer.strip()[:400]
                 for i in range(0, len(reply), 8):
                     yield ("token", reply[i:i+8])
+                _save_mem(user_text, reply)
                 yield ("done", reply)
                 return
 
@@ -127,6 +148,7 @@ def stream_reply(user_text, history=None):
                     reply = "Samajh nahi aaya."
                 for i in range(0, len(reply), 8):
                     yield ("token", reply[i:i+8])
+                _save_mem(user_text, reply)
                 yield ("done", reply)
                 return
 
@@ -137,11 +159,12 @@ def stream_reply(user_text, history=None):
                 try:
                     import agent_loop
                     result = agent_loop.run_task(goal)
-                    # Stream summary
                     for i in range(0, len(result), 8):
                         yield ("token", result[i:i+8])
+                    _save_mem(user_text, result)
                     yield ("done", result)
                 except Exception as e:
+                    _save_mem(user_text, "Agent fail: " + str(e)[:80])
                     yield ("error", "Agent fail: " + str(e)[:80])
                 return
 
@@ -171,20 +194,22 @@ def stream_reply(user_text, history=None):
 
                 try:
                     result = str(TOOLS[tool_name](args))
-                    # Synthesize live data tools (silent, no filler msg)
                     LIVE_TOOLS = {"live_data", "live_news", "live_crypto", "live_stock"}
                     if tool_name in LIVE_TOOLS:
                         result = _synthesize(user_text, result)
                     for i in range(0, len(result), 8):
                         yield ("token", result[i:i+8])
+                    _save_mem(user_text, result)
                     yield ("done", result)
                 except Exception as e:
+                    _save_mem(user_text, "Tool " + tool_name + " fail: " + str(e)[:80])
                     yield ("error", "Tool " + tool_name + " fail: " + str(e)[:80])
                 return
 
             # Fallback
             reply = decision.get("reply", "Samajh nahi aaya.")
             yield ("token", reply)
+            _save_mem(user_text, reply)
             yield ("done", reply)
             return
 

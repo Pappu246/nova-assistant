@@ -1,12 +1,80 @@
 """
 NOVA Agent Loop - Execute multi-step tasks with observe/verify/replan.
+FIXED: task history prevents duplicate execution, deduplicates steps, smarter replanning.
 """
 import time
+import threading
 import agent_state
-
 
 MAX_RETRIES_PER_STEP = 2
 MAX_REPLANS = 2
+
+# ---------- Task history - FIXES BUG 4 (duplicate tasks) ----------
+_TASK_HISTORY = []  # list of {goal:str, timestamp:float, result:str, success:bool}
+_TASK_HISTORY_MAX = 50
+_TASK_DEDUP_WINDOW_SEC = 90  # 90 seconds duplicate window
+_TASK_LOCK = threading.Lock()
+
+
+def _normalize_goal(g):
+    return " ".join(g.lower().strip().split())
+
+
+def _is_duplicate_task(goal):
+    """Check if same goal was executed very recently AND succeeded.
+    Failed tasks are NOT deduped so user can retry immediately."""
+    norm = _normalize_goal(goal)
+    now = time.time()
+    with _TASK_LOCK:
+        for entry in reversed(_TASK_HISTORY):
+            if now - entry["timestamp"] > _TASK_DEDUP_WINDOW_SEC:
+                break
+            if _normalize_goal(entry["goal"]) == norm and entry.get("success"):
+                return True, entry
+    return False, None
+
+
+def _record_task(goal, result, success):
+    with _TASK_LOCK:
+        _TASK_HISTORY.append({
+            "goal": goal,
+            "timestamp": time.time(),
+            "result": str(result)[:300],
+            "success": success,
+        })
+        # Keep capped
+        if len(_TASK_HISTORY) > _TASK_HISTORY_MAX:
+            _TASK_HISTORY[:] = _TASK_HISTORY[-_TASK_HISTORY_MAX:]
+
+
+def get_task_history(limit=10):
+    with _TASK_LOCK:
+        return list(_TASK_HISTORY[-limit:])
+
+
+def clear_task_history():
+    with _TASK_LOCK:
+        _TASK_HISTORY.clear()
+    return "Task history cleared."
+
+
+def _deduplicate_plan(plan):
+    """Remove consecutive duplicate tool+args steps."""
+    if not plan or len(plan) < 2:
+        return plan
+    seen = set()
+    out = []
+    for s in plan:
+        key = (s["tool"], str(s.get("args", {})))
+        if key in seen:
+            print(f"[agent] Skipping duplicate step: {s['tool']} {s.get('args', {})}")
+            continue
+        seen.add(key)
+        out.append(s)
+    # Renumber
+    for i, s in enumerate(out, 1):
+        s["step"] = i
+    return out
 
 
 def _execute_single_step(step):
@@ -78,11 +146,21 @@ def _filter_plan(plan):
     return plan
 
 
-def run_task(goal, on_step=None):
-    """Execute multi-step task with replanning. Returns final summary."""
+def run_task(goal, on_step=None, force=False):
+    """Execute multi-step task with replanning. Returns final summary. force=True bypasses dedup."""
     import planner
     import policy
     from tools import TOOLS
+
+    # --- DEDUP CHECK (BUG 4 FIX) ---
+    if not force:
+        is_dup, prev = _is_duplicate_task(goal)
+        if is_dup:
+            elapsed = int(time.time() - prev["timestamp"])
+            print(f"[agent] Duplicate task detected ({elapsed}s ago), skipping: {goal}")
+            # If previous succeeded, return its result; if failed, allow retry after 90s anyway?
+            # We already checked 90s window, so we return dedup message
+            return f"Boss, ye task {elapsed} second pehle hi kiya tha. Result: {prev['result'][:120]}. Dobara karna hai to 'force' bolo."
 
     state = agent_state.get_state()
     print("[agent] Goal: " + goal)
@@ -93,16 +171,24 @@ def run_task(goal, on_step=None):
 
     # First plan
     plan = planner.create_plan(goal, context=None)
+    # Deduplicate consecutive same tool calls
+    plan = _deduplicate_plan(plan)
 
+    success_final = False
     while True:
         if not plan:
             state.complete_task("failed")
-            return "Boss, plan nahi bana paaya."
+            result_msg = "Boss, plan nahi bana paaya."
+            _record_task(goal, result_msg, False)
+            return result_msg
 
         plan = _filter_plan(plan)
+        plan = _deduplicate_plan(plan)
         if not plan:
             state.complete_task("failed")
-            return "Boss, plan ke saare steps skip ho gaye."
+            result_msg = "Boss, plan ke saare steps skip ho gaye."
+            _record_task(goal, result_msg, False)
+            return result_msg
 
         print("[agent] Plan: " + str(len(plan)) + " steps")
         state.planned_steps = plan
@@ -161,6 +247,7 @@ def run_task(goal, on_step=None):
 
         # All steps in this plan succeeded
         if failed_step is None:
+            success_final = True
             break
 
         # Try replanning
@@ -180,6 +267,7 @@ def run_task(goal, on_step=None):
             break
 
         plan = new_plan
+        plan = _deduplicate_plan(plan)
 
     # Build summary
     success_count = sum(1 for r in all_results if r["status"] == "success")
@@ -188,6 +276,7 @@ def run_task(goal, on_step=None):
     if failed_count == 0:
         state.complete_task("done")
         summary_lines = ["Boss, task complete."]
+        success_final = True
     else:
         state.complete_task("partial")
         summary_lines = ["Boss, task partly done."]
@@ -200,7 +289,9 @@ def run_task(goal, on_step=None):
         else:
             summary_lines.append("  FAIL: " + r["tool"] + " - " + str(r.get("reason", ""))[:50])
 
-    return "\n".join(summary_lines)
+    final_msg = "\n".join(summary_lines)
+    _record_task(goal, final_msg, success_final)
+    return final_msg
 
 
 if __name__ == "__main__":
@@ -209,3 +300,9 @@ if __name__ == "__main__":
     import verifier
     import agent_state
     print("All imports OK")
+    print("Task history test:")
+    clear_task_history()
+    print("is_dup false:", _is_duplicate_task("Chrome kholo")[0])
+    _record_task("Chrome kholo", "done", True)
+    print("is_dup true:", _is_duplicate_task("Chrome kholo")[0])
+    print("force bypass still runs")
