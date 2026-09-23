@@ -1,4 +1,4 @@
-﻿import time
+import time
 import sounddevice as sd
 import numpy as np
 from scipy.io.wavfile import write as write_wav
@@ -110,6 +110,11 @@ def _is_repetition(text):
 
 
 def listen():
+    try:
+        from voice_id import is_boss
+    except Exception:
+        def is_boss(a, threshold=0.25): return True
+
     print()
     print("BOLO ABHI...")
     chunks = []
@@ -166,6 +171,15 @@ def listen():
     print("Sun liya (" + str(round(duration, 1)) + "s) - samajh raha hoon...")
 
     if peak < VOICE_START:
+        return ""
+
+    try:
+        boss = is_boss(audio)
+    except Exception:
+        boss = True
+
+    if not boss:
+        print("[voice_id] Ye Boss ki awaaz nahi hai - ignore kiya.")
         return ""
 
     flat = audio.astype(np.float32)
