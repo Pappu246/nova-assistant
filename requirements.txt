@@ -1,4 +1,4 @@
-﻿# NOVA - Python Dependencies
+# NOVA - Python Dependencies
 # Python 3.10+ required
 
 # ---- Core Runtime ----
@@ -29,12 +29,19 @@ ollama>=0.1.0
 
 # Automation
 pyautogui>=0.9.54
+pygetwindow>=0.0.9
+pywinauto>=0.6.8
 pynput>=1.7.6
 psutil>=5.9.0
+pycaw>=20230407
+comtypes>=1.4.8
 
 # Screen Capture
 mss>=9.0.1
 Pillow>=10.0.0
+
+# Vision (CPU-only, no admin)
+rapidocr-onnxruntime>=1.3.0
 
 # Media
 yt-dlp>=2024.1.0

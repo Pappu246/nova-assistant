@@ -218,6 +218,31 @@ def auto_extract(text):
     return found
 
 
+def get_memory_context(max_facts=10, max_convos=3):
+    """Return formatted memory context for LLM injection (long-term memory)."""
+    try:
+        facts = list_facts(limit=max_facts)
+        convos = recent_conversations(limit=max_convos)
+        parts = []
+        if facts and "kuch yaad nahi" not in facts.lower():
+            parts.append("Facts about Boss:\n" + facts)
+        if convos:
+            parts.append("Recent chat:")
+            for c in convos[-3:]:
+                parts.append(f"  Boss: {c.get('user_text','')[:80]}")
+                parts.append(f"  NOVA: {c.get('nova_text','')[:80]}")
+        if parts:
+            return "\n".join(parts)
+    except Exception:
+        pass
+    return ""
+
+
+def save_conversation(user_text, nova_text):
+    """Alias for log_conversation for compatibility."""
+    return log_conversation(user_text, nova_text)
+
+
 init_db()
 
 

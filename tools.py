@@ -326,6 +326,17 @@ def _press_key(key, times=1):
 
 
 def volume_up(args):
+    # Prefer app_control precise volume (pycaw) if available
+    try:
+        import app_control as ac
+        # ac.volume_up takes no args but we handle steps via loop
+        n = int(args.get("steps", 3)) if isinstance(args, dict) else 3
+        # Try precise via pycaw; fallback to key press
+        for _ in range(max(1, min(n, 10))):
+            ac.volume_up()
+        return f"Volume {n} step badha diya."
+    except Exception:
+        pass
     n = int(args.get("steps", 5))
     if _press_key("volumeup", n):
         return f"Volume {n} step badha diya."
@@ -333,6 +344,14 @@ def volume_up(args):
 
 
 def volume_down(args):
+    try:
+        import app_control as ac
+        n = int(args.get("steps", 3)) if isinstance(args, dict) else 3
+        for _ in range(max(1, min(n, 10))):
+            ac.volume_down()
+        return f"Volume {n} step kam kar diya."
+    except Exception:
+        pass
     n = int(args.get("steps", 5))
     if _press_key("volumedown", n):
         return f"Volume {n} step kam kar diya."
@@ -340,9 +359,46 @@ def volume_down(args):
 
 
 def volume_mute(_args=None):
-    if _press_key("volumemute"):
-        return "Mute kar diya."
-    return "pyautogui chahiye."
+    """Explicit MUTE (not toggle) - FIXES inverted bug."""
+    try:
+        import app_control as ac
+        return ac.mute()
+    except Exception:
+        if _press_key("volumemute"):
+            return "Mute kar diya."
+        return "pyautogui chahiye."
+
+
+def volume_unmute(_args=None):
+    """Explicit UNMUTE - new tool, fixes BUG 2."""
+    try:
+        import app_control as ac
+        return ac.unmute()
+    except Exception:
+        # Fallback toggle if no explicit control
+        if _press_key("volumemute"):
+            return "Unmute kar diya."
+        return "pyautogui chahiye."
+
+
+def toggle_mute(_args=None):
+    """Toggle mute state."""
+    try:
+        import app_control as ac
+        return ac.toggle_mute()
+    except Exception:
+        if _press_key("volumemute"):
+            return "Mute toggle kiya."
+        return "pyautogui chahiye."
+
+
+def volume_is_muted(_args=None):
+    try:
+        import app_control as ac
+        m = ac.is_muted()
+        return "Muted hai." if m else "Unmuted hai, awaaz aa rahi hai."
+    except Exception as e:
+        return f"Check fail: {e}"
 
 
 def next_track(_args=None):
@@ -529,6 +585,9 @@ TOOLS = {
     "volume_up": volume_up,
     "volume_down": volume_down,
     "volume_mute": volume_mute,
+    "volume_unmute": volume_unmute,
+    "toggle_mute": toggle_mute,
+    "is_muted": volume_is_muted,
     "next_track": next_track,
     "prev_track": prev_track,
     "play_pause": play_pause,
@@ -553,11 +612,14 @@ TOOLS = {
     "note": tool_note,
     "list_notes": tool_list_notes,
 
-    "click_text":       lambda a: vision_control.click_text(a.get("target", ""), a.get("nth", 0)),
-    "double_click_text": lambda a: vision_control.double_click_text(a.get("target", ""), a.get("nth", 0)),
-    "right_click_text": lambda a: vision_control.right_click_text(a.get("target", ""), a.get("nth", 0)),
-    "read_screen":      lambda a: vision_control.read_screen(),
-    "find_on_screen":   lambda a: str(vision_control.find_text_on_screen(a.get("target", ""))),
+    # Vision Control - active window by default (FIXES terminal scan)
+    "click_text":       lambda a: vision_control.click_text(a.get("target", ""), a.get("nth", 0), region_mode=a.get("region_mode", "active")),
+    "double_click_text": lambda a: vision_control.double_click_text(a.get("target", ""), a.get("nth", 0), region_mode=a.get("region_mode", "active")),
+    "right_click_text": lambda a: vision_control.right_click_text(a.get("target", ""), a.get("nth", 0), region_mode=a.get("region_mode", "active")),
+    "read_screen":      lambda a: vision_control.read_screen(region_mode=a.get("region_mode", "active")),
+    "find_on_screen":   lambda a: str(vision_control.find_text_on_screen(a.get("target", ""), region_mode=a.get("region_mode", "active"))),
+    "read_screen_full": lambda a: vision_control.read_screen(region_mode="full"),
+    "find_fullscreen":  lambda a: str(vision_control.find_text_on_screen(a.get("target", ""), region_mode="full")),
     "close_app": lambda a: app_control.close_app(a.get("name", "")),
     "focus_window": lambda a: app_control.focus_window(a.get("title", "")),
     "list_windows": lambda a: app_control.list_windows(),
@@ -566,5 +628,9 @@ TOOLS = {
     "google_search": lambda a: app_control.google_search(a.get("query", "")),
     "open_url": lambda a: app_control.open_url(a.get("url", "")),
     "screenshot": lambda a: app_control.screenshot(a.get("path")),
+    # Proper mute controls - FIXES BUG 2 inversion
     "mute": lambda a: app_control.mute(),
+    "unmute": lambda a: app_control.unmute(),
+    "toggle_mute": lambda a: app_control.toggle_mute(),
+    "is_muted": lambda a: ("Muted" if app_control.is_muted() else "Unmuted"),
 }
