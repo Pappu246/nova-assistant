@@ -14,6 +14,11 @@ except Exception:
     _GROQ = False
 
 import policy
+try:
+    from synthesis import synthesize as _synthesize
+except Exception:
+    def _synthesize(q, r): return str(r)
+
 from tools import TOOLS
 from think import TOOL_SPECS, SYSTEM_PROMPT_TEMPLATE, _build_tool_list, _extract_json
 
@@ -166,6 +171,10 @@ def stream_reply(user_text, history=None):
 
                 try:
                     result = str(TOOLS[tool_name](args))
+                    # Synthesize live data tools (silent, no filler msg)
+                    LIVE_TOOLS = {"live_data", "live_news", "live_crypto", "live_stock"}
+                    if tool_name in LIVE_TOOLS:
+                        result = _synthesize(user_text, result)
                     for i in range(0, len(result), 8):
                         yield ("token", result[i:i+8])
                     yield ("done", result)
