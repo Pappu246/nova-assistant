@@ -63,12 +63,8 @@ _current_process = None
 
 # ---------- Stop ----------
 def _do_stop():
+    """Sirf SAPI process kill. sd.stop() worker thread karega (Windows safety)."""
     global _current_process
-    if _SD:
-        try:
-            sd.stop()
-        except Exception:
-            pass
     if _current_process is not None:
         try:
             _current_process.terminate()
@@ -88,6 +84,7 @@ def is_speaking():
 
 # ---------- ESC watcher ----------
 def _esc_loop():
+    """Sirf flag set karo - audio cleanup worker karega (Windows safety)."""
     global _esc_active
     if _ESC_MODE == "keyboard":
         while _esc_active:
@@ -95,7 +92,6 @@ def _esc_loop():
                 if _kb.is_pressed("esc"):
                     print("\n[rt_speak] *** ESC pressed ***")
                     _stop_flag.set()
-                    _do_stop()
                     time.sleep(0.3)
             except Exception:
                 pass
@@ -105,7 +101,6 @@ def _esc_loop():
             if key == _pk.Key.esc:
                 print("\n[rt_speak] *** ESC pressed ***")
                 _stop_flag.set()
-                _do_stop()
         with _pk.Listener(on_press=on_press) as listener:
             while _esc_active:
                 time.sleep(0.1)
@@ -263,8 +258,60 @@ def speak(text, done_callback=None, block=False):
         _speak_queue.join()
 
 
+# Backward-compat alias (rt_main.py uses enqueue)
+enqueue = speak
+
+
 def wait_until_done():
     _speak_queue.join()
+
+
+
+
+def speak_streaming(token_stream, done_callback=None):
+    full_parts = []
+    buffer = ""
+    SENTENCE_END = ".!?"
+    for item in token_stream:
+        if _stop_flag.is_set():
+            break
+        if isinstance(item, tuple):
+            kind = item[0] if len(item) > 0 else ""
+            payload = item[1] if len(item) > 1 else ""
+            if kind == "token":
+                text = str(payload)
+            elif kind == "done":
+                # 'done' = full accumulated text - already spoken
+                continue
+            elif kind == "error":
+                text = "Sorry Boss, " + str(payload)
+            else:
+                continue
+        else:
+            text = str(item)
+        if not text:
+            continue
+        full_parts.append(text)
+        buffer += text
+        stripped = buffer.rstrip()
+        if stripped and stripped[-1] in SENTENCE_END and len(stripped) >= 3:
+            speak(stripped)
+            buffer = ""
+    if buffer.strip() and not _stop_flag.is_set():
+        speak(buffer.strip())
+    try:
+        _speak_queue.join()
+    except Exception:
+        pass
+    if done_callback:
+        done_callback()
+    return "".join(full_parts)
+
+
+enqueue = speak
+
+
+enqueue = speak
 
 
 # ---------- Test ----------
