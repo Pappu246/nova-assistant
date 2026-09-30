@@ -31,11 +31,11 @@ TOOL_SPECS = {
     "live_stock": "Get stock price (tesla, apple, reliance). Args: {symbol: str}",
     "get_time": "Return current time. Args: {}",
     "get_weather": "Get weather. Args: {city: str}",
-    "open_app": "Open application/folder/website. Args: {app_name: str}. Examples: chrome, notepad, calculator, downloads, youtube, gmail",
+    "open_app": "Open installed desktop application or folder (whatsapp, telegram, spotify, chrome, notepad, calculator, vscode, vlc, discord, word, excel, paint, explorer, downloads, etc.). Use this for ANY desktop app.",
     "take_screenshot": "Take screen screenshot. Args: {}",
     "open_screenshots": "Open screenshots folder. Args: {}",
     "play_youtube": "Play a song/video on YouTube - OPENS FIRST VIDEO DIRECTLY. Args: {query: str}. USE FOR 'gaana bajao', 'song chalao', 'youtube pe X chalao'",
-    "browse": "Browser automation - search web, click, fill forms, extract info. Args: {task: str}. Use for multi-step web tasks.",
+    "browse": "Browser automation for web pages ONLY (Amazon, Wikipedia, web search). NEVER use for installed desktop apps like WhatsApp, Telegram, Spotify.",
     "close_browser": "Close the automation browser. Args: {}",
     "volume_up": "Increase system volume. Args: {steps: int}",
     "volume_down": "Decrease system volume. Args: {steps: int}",
@@ -169,10 +169,15 @@ DECISION EXAMPLES:
 User: "kya kar rahe ho"          -> {{"mode": "chat", "reply": "Yahin hoon Boss, kya karna hai?"}}
 User: "time kya hai"             -> {{"mode": "tool", "tool": "get_time", "args": {{}}}}
 User: "chrome kholo"             -> {{"mode": "tool", "tool": "open_app", "args": {{"app_name": "chrome"}}}}
+User: "whatsapp kholo"           -> {{"mode": "tool", "tool": "open_app", "args": {{"app_name": "whatsapp"}}}}
+User: "telegram kholo"           -> {{"mode": "tool", "tool": "open_app", "args": {{"app_name": "telegram"}}}}
+User: "spotify kholo"            -> {{"mode": "tool", "tool": "open_app", "args": {{"app_name": "spotify"}}}}
+User: "notepad kholo"            -> {{"mode": "tool", "tool": "open_app", "args": {{"app_name": "notepad"}}}}
 User: "mera naam kya hai"        -> {{"mode": "tool", "tool": "recall", "args": {{"key": "user_name"}}}}
 User: "mera naam Pappu hai"      -> {{"mode": "tool", "tool": "remember", "args": {{"key": "user_name", "value": "Pappu"}}}}
 User: "screen dekh sakte ho?"    -> {{"mode": "chat", "reply": "Nahi Boss, main live screen nahi dekh sakta. Sirf commands sun sakta hoon."}}
 User: "screenshot lo"            -> {{"mode": "tool", "tool": "take_screenshot", "args": {{}}}}
+User: "whatsapp kholke screenshot bhejo" -> {{"mode": "agent", "goal": "Open WhatsApp desktop application and capture a screenshot"}}
 User: "portfolio website banao"  -> {{"mode": "agent", "goal": "Create a portfolio website with dark theme, about section, projects, contact"}}
 User: "youtube pe python dhundo aur pehla video chalao" -> {{"mode": "agent", "goal": "Open YouTube, search python, play first video"}}
 User: "5 minute baad chai yaad dilana" -> {{"mode": "tool", "tool": "set_reminder", "args": {{"text": "chai", "when": "5 minute baad"}}}}
@@ -180,6 +185,8 @@ User: "java kya hai"             -> {{"mode": "chat", "reply": "Java ek programm
 User: "save karo"                -> {{"mode": "tool", "tool": "smart_action", "args": {{"intent": "save"}}}}
 
 CRITICAL RULES FOR OUTPUT:
+- Desktop apps (WhatsApp, Telegram, Spotify, Discord, Notepad, Calc, VLC, etc.) PC par installed hain -> HAMESHA open_app use karo, browse tool se KABHI open mat karo.
+- browse tool SIRF internet browsing aur website automation (e.g. Amazon, Wikipedia) ke liye hai.
 - Reply MUST be valid JSON only. No markdown, no extra text.
 - Use ONLY tool names from the list above.
 - If unsure between chat and tool - prefer chat first, don't force tool calls.

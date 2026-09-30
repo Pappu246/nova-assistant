@@ -67,6 +67,18 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print("[telegram] NOVA: " + reply[:80])
     await update.message.reply_text(reply)
 
+    # Check if reply contains a screenshot image path to send photo
+    import re
+    img_match = re.search(r'([A-Za-z]:\\[^:\n\r]+?\.(?:png|jpg|jpeg)|/[^:\n\r]+?\.(?:png|jpg|jpeg))', reply)
+    if img_match:
+        img_path = img_match.group(1).strip()
+        if os.path.exists(img_path):
+            try:
+                with open(img_path, "rb") as photo_file:
+                    await update.message.reply_photo(photo=photo_file, caption="Screenshot ye raha Boss 📸")
+            except Exception as e:
+                print("[telegram photo send fail]:", str(e)[:80])
+
     # Update history
     _history.append({"role": "user", "content": user_text})
     _history.append({"role": "assistant", "content": reply})
