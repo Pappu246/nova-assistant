@@ -1,10 +1,18 @@
 """
-NOVA Real-Time Listener - VAD-based.
-Silero VAD se voice detect karo, chup hone pe turant STT.
+NOVA Real-Time Listener - Full-Duplex VAD-based.
+Silero VAD + Energy VAD with pre-speech circular buffer & Barge-In Detection.
 """
+import os
 import time
+import collections
+import threading
 import numpy as np
-import sounddevice as sd
+
+try:
+    import sounddevice as sd
+    _SD = True
+except Exception:
+    _SD = False
 
 try:
     import torch
@@ -13,26 +21,37 @@ except Exception:
     _TORCH = False
 
 try:
-    from silero_vad import load_silero_vad, VADIterator
+    from silero_vad import load_silero_vad
     _SILERO = True
-except Exception as e:
-    print("[rt_listen] silero import fail: " + str(e)[:80])
+except Exception:
     _SILERO = False
 
 
 SAMPLE_RATE = 16000
-MIC_DEVICE = 1
-CHUNK_MS = 32  # Silero needs 512 samples @ 16kHz = 32ms
-CHUNK_SAMPLES = 512
+CHUNK_SAMPLES = 512       # 32ms @ 16kHz
+SILENCE_AFTER_MS = 480    # Snappy human pause detection (480ms)
+MIN_SPEECH_MS = 300       # Minimum speech length
+MAX_SPEECH_SEC = 30       # Max recording limit
+PRE_SPEECH_CHUNKS = 6     # ~192ms pre-speech audio buffer
 
-# VAD tuning
-VAD_THRESHOLD = 0.4           # Silero threshold
-SILENCE_AFTER_MS = 900         # Bolna band hone ke baad itna silence = stop
-MIN_SPEECH_MS = 400            # Minimum speech length
-MAX_SPEECH_SEC = 30            # Max recording
-
+VAD_THRESHOLD = 0.38
+BARGE_IN_THRESHOLD = 0.60
 
 _vad_model = None
+_barge_in_active = False
+_barge_in_thread = None
+_barge_in_audio_captured = None
+
+
+def _get_mic_device():
+    """Get configured mic device or None (system default)."""
+    dev = os.environ.get("NOVA_MIC_DEVICE")
+    if dev is not None:
+        try:
+            return int(dev)
+        except Exception:
+            return dev
+    return None
 
 
 def _load_vad():
@@ -48,32 +67,49 @@ def _load_vad():
     return _vad_model
 
 
-def listen_vad(timeout_sec=30, debug=False):
+def _calc_prob(model, chunk_int16):
+    """Calculate speech probability for a 512-sample chunk."""
+    if model is not None and _TORCH:
+        try:
+            tensor = torch.from_numpy(chunk_int16.astype(np.float32) / 32768.0)
+            return float(model(tensor, SAMPLE_RATE).item())
+        except Exception:
+            pass
+    # Fallback energy-based probability
+    rms = np.sqrt(np.mean(chunk_int16.astype(np.float32) ** 2))
+    return min(1.0, float(rms / 800.0))
+
+
+def listen_vad(timeout_sec=30, debug=False, initial_buffer=None):
     """
-    VAD-based listening.
-    Waits for speech, records until silence, returns int16 audio array.
-    Returns (audio_int16, duration_sec) or (None, 0) if timeout.
+    VAD-based listening with pre-speech circular buffer.
+    Returns (audio_int16, duration_sec) or (None, 0) on timeout.
     """
+    if not _SD:
+        return None, 0
+
     model = _load_vad()
-    if model is None:
-        # Fallback: fixed 5s record
-        audio = sd.rec(int(5 * SAMPLE_RATE), samplerate=SAMPLE_RATE,
-                       channels=1, dtype="int16", device=MIC_DEVICE)
-        sd.wait()
-        return audio.flatten(), 5.0
+    if model and _TORCH:
+        try:
+            model.reset_states()
+        except Exception:
+            pass
 
-    # Reset VAD state
-    try:
-        model.reset_states()
-    except Exception:
-        pass
-
+    mic_dev = _get_mic_device()
+    pre_buffer = collections.deque(maxlen=PRE_SPEECH_CHUNKS)
     speech_buffer = []
+
+    # If audio was captured during barge-in interrupt, start from it
+    if initial_buffer is not None and len(initial_buffer) > 0:
+        speech_buffer.append(initial_buffer)
+        recording = True
+        speech_ms = (len(initial_buffer) * 1000) // SAMPLE_RATE
+    else:
+        recording = False
+        speech_ms = 0
+
     silence_ms = 0
-    speech_ms = 0
-    recording = False
     start_time = time.time()
-    triggered = False
 
     try:
         stream = sd.InputStream(
@@ -81,7 +117,7 @@ def listen_vad(timeout_sec=30, debug=False):
             channels=1,
             dtype="int16",
             blocksize=CHUNK_SAMPLES,
-            device=MIC_DEVICE,
+            device=mic_dev,
         )
         stream.start()
     except Exception as e:
@@ -96,46 +132,39 @@ def listen_vad(timeout_sec=30, debug=False):
                 break
 
             flat = data.flatten()
-            audio_tensor = torch.from_numpy(flat.astype(np.float32) / 32768.0)
-            try:
-                prob = model(audio_tensor, SAMPLE_RATE).item()
-            except Exception:
-                prob = 0.0
+            prob = _calc_prob(model, flat)
 
-            # Speech detected
             if prob > VAD_THRESHOLD:
                 if not recording:
                     recording = True
+                    # Prepend pre-speech buffer so initial syllables are preserved
+                    for prev in pre_buffer:
+                        speech_buffer.append(prev)
+                        speech_ms += (CHUNK_SAMPLES * 1000) // SAMPLE_RATE
                     if debug:
-                        print("[rt_listen] speech start (prob=" + str(round(prob, 2)) + ")")
+                        print(f"[rt_listen] speech start (prob={prob:.2f})")
+
                 speech_buffer.append(flat)
                 speech_ms += (CHUNK_SAMPLES * 1000) // SAMPLE_RATE
                 silence_ms = 0
-                triggered = True
             else:
                 if recording:
                     speech_buffer.append(flat)
                     silence_ms += (CHUNK_SAMPLES * 1000) // SAMPLE_RATE
-
-                    # Silence detected - stop
                     if silence_ms >= SILENCE_AFTER_MS:
                         if debug:
-                            print("[rt_listen] silence detected, stop")
+                            print(f"[rt_listen] pause detected ({silence_ms}ms), ready")
                         break
-                # else: not recording, keep waiting silently
+                else:
+                    pre_buffer.append(flat)
 
-            # Safety: max record length
             if speech_ms >= MAX_SPEECH_SEC * 1000:
                 if debug:
-                    print("[rt_listen] max length reached")
+                    print("[rt_listen] max duration reached")
                 break
 
-            # Timeout overall
             if time.time() - start_time > timeout_sec:
                 break
-
-            if debug and recording and speech_ms % 500 == 0:
-                print("[rt_listen] recording: " + str(speech_ms) + "ms, silence=" + str(silence_ms))
 
     finally:
         try:
@@ -144,50 +173,97 @@ def listen_vad(timeout_sec=30, debug=False):
         except Exception:
             pass
 
-    if not speech_buffer:
+    if not speech_buffer or speech_ms < MIN_SPEECH_MS:
         return None, 0
 
     audio = np.concatenate(speech_buffer).astype(np.int16)
     duration = len(audio) / SAMPLE_RATE
-
-    # Too short?
-    if speech_ms < MIN_SPEECH_MS:
-        if debug:
-            print("[rt_listen] too short (" + str(speech_ms) + "ms), skip")
-        return None, 0
-
     return audio, duration
+
+
+def start_barge_in_monitor(on_barge_in):
+    """
+    Background voice monitor while NOVA is speaking.
+    If user speaks, calls on_barge_in() immediately.
+    """
+    global _barge_in_active, _barge_in_thread
+    if not _SD:
+        return
+
+    _barge_in_active = True
+
+    def _monitor():
+        global _barge_in_active, _barge_in_audio_captured
+        _barge_in_audio_captured = None
+        model = _load_vad()
+        mic_dev = _get_mic_device()
+
+        consecutive_speech = 0
+        captured_chunks = []
+
+        try:
+            stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="int16",
+                blocksize=CHUNK_SAMPLES,
+                device=mic_dev,
+            )
+            stream.start()
+        except Exception:
+            return
+
+        try:
+            while _barge_in_active:
+                try:
+                    data, _ = stream.read(CHUNK_SAMPLES)
+                except Exception:
+                    break
+
+                flat = data.flatten()
+                prob = _calc_prob(model, flat)
+
+                if prob > BARGE_IN_THRESHOLD:
+                    consecutive_speech += 1
+                    captured_chunks.append(flat)
+                    if consecutive_speech >= 3:
+                        print("\n[rt_listen] 🛑 Voice Barge-In! Interrupting speech...")
+                        if on_barge_in:
+                            on_barge_in()
+                        if captured_chunks:
+                            _barge_in_audio_captured = np.concatenate(captured_chunks).astype(np.int16)
+                        break
+                else:
+                    consecutive_speech = max(0, consecutive_speech - 1)
+                    if len(captured_chunks) > 4:
+                        captured_chunks.pop(0)
+
+                time.sleep(0.01)
+        finally:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+
+    _barge_in_thread = threading.Thread(target=_monitor, daemon=True)
+    _barge_in_thread.start()
+
+
+def stop_barge_in_monitor():
+    """Stop barge-in monitor and return any audio captured during interruption."""
+    global _barge_in_active, _barge_in_audio_captured
+    _barge_in_active = False
+    captured = _barge_in_audio_captured
+    _barge_in_audio_captured = None
+    return captured
 
 
 if __name__ == "__main__":
     print("=" * 55)
-    print("  rt_listen.py VAD TEST")
+    print("  rt_listen.py VAD TEST (Full-Duplex)")
     print("=" * 55)
     _load_vad()
-    print()
-    print("Mic [1] ready. Bolo kuch, phir chup ho jao.")
-    print("Silence 800ms ke baad auto-stop hoga.")
-    print()
-
-    for i in range(3):
-        print("--- Attempt " + str(i+1) + "/3 ---")
-        print(">>> Bolo ABHI...")
-        audio, dur = listen_vad(timeout_sec=20, debug=True)
-        if audio is None:
-            print("   (kuch nahi suna)")
-        else:
-            peak = int(np.abs(audio).max())
-            print("   Captured: " + str(round(dur, 2)) + "s, peak=" + str(peak))
-            # Transcribe for verification
-            try:
-                from rt_stt import transcribe
-                import time
-                t0 = time.time()
-                text = transcribe(audio)
-                dt = time.time() - t0
-                print("   STT (" + str(round(dt, 2)) + "s): " + text)
-            except Exception as e:
-                print("   STT fail: " + str(e)[:60])
-        print()
-
+    print("Mic ready. Bolo kuch, phir chup ho jao.")
+    print(f"Silence {SILENCE_AFTER_MS}ms ke baad auto-stop hoga.")
     print("=" * 55)

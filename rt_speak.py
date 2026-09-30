@@ -1,9 +1,9 @@
 """
-NOVA Real-Time TTS - soundfile version (pygame-free)
+NOVA Real-Time TTS - Soundfile + Sounddevice + Voice Barge-In.
 - edge-tts generates MP3
 - soundfile reads MP3 (libsndfile)
 - sounddevice plays it
-- ESC key = stop (background listener)
+- Instant interruption via Voice Barge-In or ESC key
 """
 import os
 import time
@@ -48,8 +48,6 @@ except Exception:
     except Exception:
         _ESC_MODE = None
 
-print("[rt_speak] ESC:", _ESC_MODE, "| soundfile:", _SF, "| sounddevice:", _SD, "| edge:", _EDGE)
-
 
 # ---------- State ----------
 _speaking_flag = threading.Event()
@@ -61,9 +59,18 @@ _esc_active = False
 _current_process = None
 
 
+def _clear_queue():
+    """Empty all pending items in speak queue immediately."""
+    while not _speak_queue.empty():
+        try:
+            _speak_queue.get_nowait()
+            _speak_queue.task_done()
+        except Exception:
+            break
+
+
 # ---------- Stop ----------
 def _do_stop():
-    """Sirf SAPI process kill. sd.stop() worker thread karega (Windows safety)."""
     global _current_process
     if _current_process is not None:
         try:
@@ -74,8 +81,16 @@ def _do_stop():
 
 
 def stop_speaking():
+    """Immediately stop TTS playback, clear queued sentences, and cancel audio output."""
     _stop_flag.set()
+    _clear_queue()
     _do_stop()
+    try:
+        if _SD:
+            sd.stop()
+    except Exception:
+        pass
+    _speaking_flag.clear()
 
 
 def is_speaking():
@@ -84,14 +99,12 @@ def is_speaking():
 
 # ---------- ESC watcher ----------
 def _esc_loop():
-    """Sirf flag set karo - audio cleanup worker karega (Windows safety)."""
     global _esc_active
     if _ESC_MODE == "keyboard":
         while _esc_active:
             try:
                 if _kb.is_pressed("esc"):
-                    print("\n[rt_speak] *** ESC pressed ***")
-                    _stop_flag.set()
+                    stop_speaking()
                     time.sleep(0.3)
             except Exception:
                 pass
@@ -99,8 +112,7 @@ def _esc_loop():
     elif _ESC_MODE == "pynput":
         def on_press(key):
             if key == _pk.Key.esc:
-                print("\n[rt_speak] *** ESC pressed ***")
-                _stop_flag.set()
+                stop_speaking()
         with _pk.Listener(on_press=on_press) as listener:
             while _esc_active:
                 time.sleep(0.1)
@@ -123,7 +135,7 @@ def _stop_esc():
 
 # ---------- edge-tts ----------
 async def _edge_save(text, path):
-    communicate = edge_tts.Communicate(text, "hi-IN-MadhurNeural")
+    communicate = edge_tts.Communicate(text, "hi-IN-MadhurNeural", rate="+6%")
     await communicate.save(path)
 
 
@@ -165,7 +177,7 @@ def _sapi_speak(text):
             if _stop_flag.is_set():
                 _current_process.terminate()
                 break
-            time.sleep(0.1)
+            time.sleep(0.05)
         _current_process = None
         return True
     except Exception as e:
@@ -182,14 +194,15 @@ def _play(path):
         data, sr = sf.read(path, dtype="float32")
         if data.ndim > 1:
             data = data.mean(axis=1)
+        if _stop_flag.is_set():
+            return
         sd.play(data, sr)
-        # poll for stop
         stream = sd.get_stream()
         while stream is not None and stream.active:
             if _stop_flag.is_set():
                 sd.stop()
                 break
-            time.sleep(0.03)
+            time.sleep(0.02)
     except Exception as e:
         print("[rt_speak] play fail:", str(e)[:80])
 
@@ -203,14 +216,20 @@ def _worker_loop():
             break
         text, done_cb = item
         try:
-            if not text or not text.strip():
+            if not text or not text.strip() or _stop_flag.is_set():
                 if done_cb:
                     done_cb()
                 continue
 
-            _stop_flag.clear()
             _speaking_flag.set()
             _start_esc()
+
+            # Enable background voice barge-in monitoring during speech
+            try:
+                import rt_listen
+                rt_listen.start_barge_in_monitor(stop_speaking)
+            except Exception:
+                pass
 
             path = os.path.join(
                 tempfile.gettempdir(),
@@ -218,25 +237,31 @@ def _worker_loop():
             )
 
             if _edge_to_file(text, path):
-                print("[rt_speak] speak:", text[:60])
-                _play(path)
+                if not _stop_flag.is_set():
+                    _play(path)
                 try:
                     os.remove(path)
                 except Exception:
                     pass
             else:
-                print("[rt_speak] edge failed -> SAPI fallback")
-                _sapi_speak(text)
+                if not _stop_flag.is_set():
+                    _sapi_speak(text)
 
+        except Exception as e:
+            print("[rt_speak] worker err:", str(e)[:80])
+        finally:
+            try:
+                import rt_listen
+                rt_listen.stop_barge_in_monitor()
+            except Exception:
+                pass
             _speaking_flag.clear()
             _stop_esc()
             if done_cb:
-                done_cb()
-        except Exception as e:
-            print("[rt_speak] worker err:", str(e)[:80])
-            _speaking_flag.clear()
-            _stop_esc()
-        finally:
+                try:
+                    done_cb()
+                except Exception:
+                    pass
             try:
                 _speak_queue.task_done()
             except Exception:
@@ -252,26 +277,32 @@ def _ensure_worker():
 
 # ---------- Public API ----------
 def speak(text, done_callback=None, block=False):
+    _stop_flag.clear()
     _ensure_worker()
     _speak_queue.put((text, done_callback))
     if block:
         _speak_queue.join()
 
 
-# Backward-compat alias (rt_main.py uses enqueue)
 enqueue = speak
 
 
 def wait_until_done():
-    _speak_queue.join()
-
-
+    try:
+        _speak_queue.join()
+    except Exception:
+        pass
 
 
 def speak_streaming(token_stream, done_callback=None):
+    """
+    Synthesize sentence-by-sentence in real time as tokens arrive.
+    """
+    _stop_flag.clear()
     full_parts = []
     buffer = ""
-    SENTENCE_END = ".!?"
+    SENTENCE_END = ".!?\n"
+
     for item in token_stream:
         if _stop_flag.is_set():
             break
@@ -281,7 +312,6 @@ def speak_streaming(token_stream, done_callback=None):
             if kind == "token":
                 text = str(payload)
             elif kind == "done":
-                # 'done' = full accumulated text - already spoken
                 continue
             elif kind == "error":
                 text = "Sorry Boss, " + str(payload)
@@ -289,49 +319,35 @@ def speak_streaming(token_stream, done_callback=None):
                 continue
         else:
             text = str(item)
+
         if not text:
             continue
+
         full_parts.append(text)
         buffer += text
-        stripped = buffer.rstrip()
-        if stripped and stripped[-1] in SENTENCE_END and len(stripped) >= 3:
-            speak(stripped)
-            buffer = ""
+
+        # Check for sentence boundary to dispatch immediate TTS
+        for sep in SENTENCE_END:
+            if sep in buffer and len(buffer.strip()) >= 5:
+                parts = buffer.split(sep, 1)
+                sentence = parts[0].strip()
+                buffer = parts[1] if len(parts) > 1 else ""
+                if sentence and not _stop_flag.is_set():
+                    speak(sentence)
+                break
+
     if buffer.strip() and not _stop_flag.is_set():
         speak(buffer.strip())
+
     try:
         _speak_queue.join()
     except Exception:
         pass
+
     if done_callback:
         done_callback()
     return "".join(full_parts)
 
 
-enqueue = speak
-
-
-enqueue = speak
-
-
-# ---------- Test ----------
 if __name__ == "__main__":
-    print()
-    print("=" * 50)
-    print("  TEST: 10-second speech")
-    print("  Press ESC anytime to STOP")
-    print("=" * 50)
-    print()
-
-    speak(
-        "Yeh ek lamba test hai. Agar tum ESC key dabao "
-        "toh main turant ruk jaunga. Warna main das second "
-        "baad khud ruk jaunga. ESC background mein sun raha hoon."
-    )
-
-    for i in range(150):
-        if not is_speaking() and _speak_queue.empty():
-            break
-        time.sleep(0.1)
-
-    print("Test done.")
+    print("[rt_speak] ready")

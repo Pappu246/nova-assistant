@@ -1,6 +1,10 @@
 """
-NOVA Real-Time Main - VAD listen -> STT -> Streaming Brain -> Streaming TTS.
-Full conversation loop with barge-in support.
+NOVA Real-Time Voice Companion (Full-Duplex Human-Like Conversation).
+Features:
+- Continuous ambient listening with Silero VAD
+- Voice Barge-In: bolte hi NOVA interrupt hokar chup ho jata hai
+- Ultra low-latency streaming pipeline
+- Natural Hinglish persona & long-term memory
 """
 import sys
 import time
@@ -33,134 +37,113 @@ def get_name():
 
 
 def speak(text):
-    """Simple blocking speak (for greetings, errors)."""
-    rt_speak._ensure_worker()
-    rt_speak.enqueue(text)
-    rt_speak._speak_queue.join()
+    """Speak text blocking (for greetings and direct notices)."""
+    rt_speak.speak(text, block=True)
 
 
 def realtime_loop():
-    """Main real-time conversation loop."""
-
-    print("=" * 55)
-    print("  NOVA Real-Time Mode")
-    print("  Seedha bolo - VAD auto-detect karega")
-    print("  Chup hone pe turant jawab milega")
-    print("  'stop' / 'ruko' - ruk jao")
-    print("  'bye' - exit")
-    print("=" * 55)
-
-    # Greeting
+    """Main full-duplex real-time conversation loop."""
     name = get_name()
-    speak(f"Namaste {name}, sun raha hoon")
 
-    # Background: Start screen watcher + reminders
+    print("=" * 60)
+    print("  🎙️ NOVA Real-Time Voice Companion (Full-Duplex)")
+    print(f"  Namaste {name}! Main live sun raha hoon.")
+    print("  • Seedha bolo — bolna band karte hi jawab milega")
+    print("  • Voice Barge-In: Beech mein bologe toh turant chup ho jaunga")
+    print("  • 'so jao' -> standby | 'bye' -> exit")
+    print("=" * 60)
+
+    # Initial Greeting
+    speak(f"Namaste {name}, main sun raha hoon. Kaho, kya haal chal?")
+
+    # Background Reminders
     try:
         import reminders
         def _on_reminder(text):
-            speak(f"Boss, reminder: {text}")
+            speak(f"Boss, ek reminder hai: {text}")
         reminders.start_watcher(_on_reminder)
-        print("[rt_main] Reminders active")
     except Exception as e:
-        print("[rt_main] reminders fail: " + str(e)[:60])
+        print("[rt_main] Reminders note: " + str(e)[:60])
 
     history = []
     standby = False
-    cycle = 0
+    pending_audio = None
 
     while True:
-        cycle += 1
-        print("\n--- Cycle " + str(cycle) + " ---")
-
-        # Listen with VAD
-        print(">>> Bolo ABHI...")
-        t0 = time.time()
-        audio, duration = rt_listen.listen_vad(timeout_sec=60, debug=False)
+        # Check if we already have audio captured from a barge-in interruption
+        if pending_audio is not None:
+            audio = pending_audio
+            duration = len(audio) / rt_listen.SAMPLE_RATE
+            pending_audio = None
+        else:
+            if not standby:
+                print("\n🎤 [Sun raha hoon...]")
+            audio, duration = rt_listen.listen_vad(timeout_sec=60, debug=False)
 
         if audio is None:
-            print("   (kuch nahi suna, dobara)")
             continue
 
-        print("   Captured: " + str(round(duration, 2)) + "s")
-
-        # STT
-        t1 = time.time()
+        # Transcribe
+        t_stt_start = time.time()
         text = rt_stt.transcribe(audio)
-        stt_time = time.time() - t1
+        stt_duration = time.time() - t_stt_start
 
-        if not text:
-            print("   (STT khali, skip)")
+        if not text or not text.strip():
             continue
 
-        print("   STT (" + str(round(stt_time, 2)) + "s): " + text)
-        print("   Tum: " + text)
+        print(f"\n👤 {name}: {text}")
 
         low = text.lower().strip()
 
-        # ---- Standby mode ----
+        # ---- Standby Handling ----
         sleep_kw = ["so jao", "soja", "soo jao", "su jao", "sujao",
-                    "gojao", "sleep", "band ho ja", "good night"]
+                    "standby", "sleep", "band ho ja", "good night"]
         if any(w in low for w in sleep_kw):
-            print("[rt_main] Standby mode")
-            speak("Theek hai Boss, standby pe ja raha hoon.")
+            print("💤 [Standby Mode]")
+            speak("Theek hai Boss, standby pe hoon. Jab bhi bulaoge aa jaunga.")
             standby = True
             continue
 
         if standby:
-            print("[rt_main] Wapas active")
-            speak("Wapas aa gaya!")
-            standby = False
-            continue
+            wake_kw = ["uth jao", "jago", "nova", "jarvis", "suno", "hey", "hello"]
+            if any(w in low for w in wake_kw):
+                print("⚡ [Active Mode]")
+                speak("Haan Boss, main wapas aa gaya. Bolo kya karna hai?")
+                standby = False
+                continue
+            else:
+                continue
 
-        # ---- Bye ----
-        if any(w in low for w in ["bye", "goodbye", "shutdown"]):
-            speak("Theek hai Boss, milte hain!")
+        # ---- Exit Command ----
+        if any(w in low for w in ["bye", "goodbye", "alvida", "exit karo"]):
+            speak(f"Alvida {name}! Apna khayal rakhna.")
             break
 
-        # ---- Stop (mid-speech) ----
-        if any(w in low for w in ["stop", "ruko", "chup", "bas"]):
-            print("[rt_main] Stop command")
+        # ---- Stop / Mute Command ----
+        if low in ["stop", "ruko", "chup", "bas", "shant"]:
             rt_speak.stop_speaking()
             continue
 
-        # ---- Brain + speak (streaming) ----
-        print("   [brain] streaming reply...")
-        t2 = time.time()
-        first_audio_flag = {"t": None}
+        # ---- Streaming Brain + Live Speech with Voice Barge-In ----
+        print("🤖 NOVA: ", end="", flush=True)
 
-        # Wrap speak_streaming to detect first audio start
-        _orig_enqueue = rt_speak.enqueue
+        token_stream = rt_brain.stream_reply(text, history)
+        full_reply = rt_speak.speak_streaming(token_stream)
+        print(f"{full_reply}\n")
 
-        def _tracked_enqueue(text, done_callback=None):
-            if first_audio_flag["t"] is None:
-                first_audio_flag["t"] = time.time() - t2
-            return _orig_enqueue(text, done_callback)
+        # Check if user interrupted while speaking and captured barge-in audio
+        interrupted_audio = rt_listen.stop_barge_in_monitor()
+        if interrupted_audio is not None and len(interrupted_audio) > 0:
+            pending_audio = interrupted_audio
 
-        rt_speak.enqueue = _tracked_enqueue
-        try:
-            token_stream = rt_brain.stream_reply(text, history)
-            full_reply = rt_speak.speak_streaming(token_stream)
-        finally:
-            rt_speak.enqueue = _orig_enqueue
+        # Update Conversation History
+        if full_reply:
+            history.append({"role": "user", "content": text})
+            history.append({"role": "assistant", "content": full_reply})
+            if len(history) > 20:
+                history = history[-20:]
 
-        brain_time = time.time() - t2
-        total_time = time.time() - t0
-        first_audio = first_audio_flag["t"] or 0
-
-        print("   NOVA: " + full_reply[:120])
-        perceived = stt_time + first_audio
-        print("   [timing] STT=" + str(round(stt_time, 2)) +
-              "s | First audio=" + str(round(first_audio, 2)) +
-              "s | PERCEIVED=" + str(round(perceived, 2)) + "s" +
-              " | Total played=" + str(round(total_time, 2)) + "s")
-
-        # Update history
-        history.append({"role": "user", "content": text})
-        history.append({"role": "assistant", "content": full_reply})
-        if len(history) > 20:
-            history = history[-20:]
-
-    print("\n[rt_main] Exit")
+    print("\n[rt_main] Voice session ended.")
     rt_speak.stop_speaking()
 
 
@@ -168,5 +151,5 @@ if __name__ == "__main__":
     try:
         realtime_loop()
     except KeyboardInterrupt:
-        print("\n[rt_main] Interrupted")
+        print("\n[rt_main] Interrupted by user.")
         rt_speak.stop_speaking()
