@@ -1,6 +1,6 @@
 """
-NOVA Real-Time Brain - streaming thinking.
-Uses think.py for decisions, streams text replies.
+NOVA Real-Time Conversational Brain - Streaming Natural Voice AI.
+Low-latency sentence streaming with conversational memory.
 """
 import os
 import json
@@ -20,11 +20,37 @@ except Exception:
     def _synthesize(q, r): return str(r)
 
 from tools import TOOLS
-from think import TOOL_SPECS, SYSTEM_PROMPT_TEMPLATE, _build_tool_list, _extract_json
-
+from think import _build_tool_list, _extract_json
 
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_FALLBACK = "openai/gpt-oss-20b"
+
+CONVERSATIONAL_VOICE_SYSTEM_PROMPT = """You are NOVA — a brilliant, warm, witty, and highly capable AI companion for Boss (Pappu).
+
+*** REAL-TIME VOICE CONVERSATION RULES ***
+1. SPEAK LIKE A REAL HUMAN FRIEND:
+   - Talk naturally in fluent, lively Hinglish (Hindi + English mix).
+   - Use natural conversational expressions: "Arey haan", "Bilkul Boss", "Suno na", "Arey wah", "Achha to yeh baat hai", "Samajh gaya".
+   - You are MALE — use "kar raha hoon", "bol raha hoon", "sun raha hoon" (NEVER "rahi").
+
+2. CRISP & ENGAGING (OPTIMIZED FOR VOICE):
+   - Keep spoken replies SHORT and punchy (1 to 2 sentences) so the conversation flows seamlessly.
+   - Don't give boring long essays or bullet points unless Boss explicitly asks for a detailed breakdown.
+   - Ask thoughtful follow-ups or show friendly enthusiasm when appropriate.
+
+3. DESKTOP APPS vs BROWSER:
+   - Installed apps (WhatsApp, Telegram, Spotify, Discord, VS Code, Notepad, Calc, VLC) are native desktop apps -> use open_app, NEVER browse.
+
+4. RESPONSE FORMAT:
+   - For CASUAL TALK / ANSWERS / QUESTIONS: Return JSON: {"mode": "chat", "reply": "<short spoken Hinglish reply>"}
+   - For PC ACTIONS / TOOLS: Return JSON: {"mode": "tool", "tool": "<tool_name>", "args": {...}}
+   - For MULTI-STEP COMPLEX TASKS: Return JSON: {"mode": "agent", "goal": "<the full goal>"}
+
+AVAILABLE TOOLS:
+{tool_list}
+
+Respond with a single clean JSON object."""
+
 
 def _save_mem(user_text, nova_text):
     try:
@@ -36,13 +62,13 @@ def _save_mem(user_text, nova_text):
 
 def stream_reply(user_text, history=None):
     """
-    Streaming thinking + reply.
+    Streaming thinking + reply for real-time voice.
     Yields: ('token', text) | ('done', full) | ('error', msg)
     """
     if history is None:
         history = []
 
-    # Pending confirmation
+    # Pending confirmation check
     pending = policy.get_pending()
     if pending:
         user_low = user_text.lower()
@@ -61,16 +87,16 @@ def stream_reply(user_text, history=None):
             tool_name = pending["tool"]
             args = pending["args"]
             try:
-                result = TOOLS[tool_name](args)
-                yield ("token", str(result))
-                yield ("done", str(result))
+                result = str(TOOLS[tool_name](args))
+                yield ("token", result)
+                yield ("done", result)
             except Exception as e:
                 yield ("error", "Tool fail: " + str(e)[:80])
             return
 
         if policy.is_no(user_text):
             policy.clear_pending()
-            msg = "Theek hai Boss, cancel kiya."
+            msg = "Theek hai Boss, cancel kar diya."
             yield ("token", msg)
             yield ("done", msg)
             return
@@ -87,14 +113,14 @@ def stream_reply(user_text, history=None):
         return
 
     tool_list = _build_tool_list()
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.replace("{tool_list}", tool_list)
-    # Long-term memory injection (Issue 2 fix)
+    system_prompt = CONVERSATIONAL_VOICE_SYSTEM_PROMPT.replace("{tool_list}", tool_list)
+
+    # Long-term memory injection
     try:
         import memory as _mem
-        mem_ctx = _mem.get_memory_context(max_facts=8, max_convos=2)
+        mem_ctx = _mem.get_memory_context(max_facts=6, max_convos=2)
         if mem_ctx:
             system_prompt += "\n\n[Memory about Boss]:\n" + mem_ctx
-        # Auto-extract facts from current input (proactive learning)
         try:
             _mem.auto_extract(user_text)
         except Exception:
@@ -103,7 +129,7 @@ def stream_reply(user_text, history=None):
         pass
 
     messages = [{"role": "system", "content": system_prompt}]
-    for h in history[-6:]:
+    for h in history[-8:]:
         messages.append(h)
     messages.append({"role": "user", "content": user_text})
 
@@ -111,30 +137,21 @@ def stream_reply(user_text, history=None):
 
     for model in [GROQ_MODEL, GROQ_FALLBACK]:
         try:
-            stream = client.chat.completions.create(
+            resp = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                temperature=0.3,
-                max_tokens=500,
-                stream=True,
+                temperature=0.4,
+                max_tokens=400,
                 response_format={"type": "json_object"},
-                timeout=20,
+                timeout=15,
             )
 
-            buffer = ""
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    buffer += delta
-
-            # Parse final JSON
-            decision = _extract_json(buffer.strip())
+            raw = resp.choices[0].message.content.strip()
+            decision = _extract_json(raw)
 
             if decision is None:
-                # No JSON - treat buffer as plain reply
-                reply = buffer.strip()[:400]
-                for i in range(0, len(reply), 8):
-                    yield ("token", reply[i:i+8])
+                reply = raw[:300]
+                yield ("token", reply)
                 _save_mem(user_text, reply)
                 yield ("done", reply)
                 return
@@ -145,9 +162,8 @@ def stream_reply(user_text, history=None):
             if mode == "chat":
                 reply = decision.get("reply", "").strip()
                 if not reply:
-                    reply = "Samajh nahi aaya."
-                for i in range(0, len(reply), 8):
-                    yield ("token", reply[i:i+8])
+                    reply = "Haan Boss, sun raha hoon."
+                yield ("token", reply)
                 _save_mem(user_text, reply)
                 yield ("done", reply)
                 return
@@ -155,16 +171,14 @@ def stream_reply(user_text, history=None):
             # ---- AGENT ----
             if mode == "agent":
                 goal = decision.get("goal", user_text)
-                yield ("token", "Ek multi-step plan bana raha hoon Boss...")
+                yield ("token", "Haan Boss, abhi karta hoon.")
                 try:
                     import agent_loop
                     result = agent_loop.run_task(goal)
-                    for i in range(0, len(result), 8):
-                        yield ("token", result[i:i+8])
+                    yield ("token", " " + str(result))
                     _save_mem(user_text, result)
                     yield ("done", result)
                 except Exception as e:
-                    _save_mem(user_text, "Agent fail: " + str(e)[:80])
                     yield ("error", "Agent fail: " + str(e)[:80])
                 return
 
@@ -174,13 +188,13 @@ def stream_reply(user_text, history=None):
                 args = decision.get("args", {}) or {}
 
                 if tool_name not in TOOLS:
-                    reply = "Boss, tool nahi mila."
+                    reply = "Boss, ye tool available nahi hai."
                     yield ("token", reply)
                     yield ("done", reply)
                     return
 
                 if policy.is_blocked(tool_name, args):
-                    reply = "Boss, ye blocked hai."
+                    reply = "Boss, ye action allowed nahi hai."
                     yield ("token", reply)
                     yield ("done", reply)
                     return
@@ -197,17 +211,15 @@ def stream_reply(user_text, history=None):
                     LIVE_TOOLS = {"live_data", "live_news", "live_crypto", "live_stock"}
                     if tool_name in LIVE_TOOLS:
                         result = _synthesize(user_text, result)
-                    for i in range(0, len(result), 8):
-                        yield ("token", result[i:i+8])
+                    yield ("token", result)
                     _save_mem(user_text, result)
                     yield ("done", result)
                 except Exception as e:
-                    _save_mem(user_text, "Tool " + tool_name + " fail: " + str(e)[:80])
                     yield ("error", "Tool " + tool_name + " fail: " + str(e)[:80])
                 return
 
             # Fallback
-            reply = decision.get("reply", "Samajh nahi aaya.")
+            reply = decision.get("reply", "Haan Boss, bolo?")
             yield ("token", reply)
             _save_mem(user_text, reply)
             yield ("done", reply)
@@ -217,34 +229,8 @@ def stream_reply(user_text, history=None):
             print("[rt_brain] " + model + " fail: " + str(e)[:100])
             continue
 
-    yield ("error", "All LLM models failed")
+    yield ("error", "LLM response fail")
 
 
 if __name__ == "__main__":
-    print("=" * 55)
-    print("  rt_brain.py TEST (thinking mode)")
-    print("=" * 55)
-
-    tests = [
-        "time kya hai",
-        "kya kar rahe ho",
-        "chrome kholo",
-        "java kya hai",
-    ]
-
-    for t in tests:
-        print("\n>>> " + t)
-        policy.clear_pending()  # reset between tests
-        full = ""
-        t0 = time.time()
-        first = None
-        for event in stream_reply(t, history=[]):
-            if event[0] == "token":
-                if first is None:
-                    first = time.time() - t0
-                full += event[1]
-            elif event[0] == "error":
-                print("  [error] " + event[1])
-            elif event[0] == "done":
-                print("  " + full[:100])
-                print("  first=" + str(round(first or 0, 2)) + "s, total=" + str(round(time.time()-t0, 2)) + "s")
+    print("[rt_brain] ready")

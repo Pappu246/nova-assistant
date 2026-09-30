@@ -7,6 +7,7 @@ import urllib.request
 import urllib.parse
 import json
 import os
+import re
 import webbrowser
 import time
 
@@ -95,12 +96,10 @@ WEBSITES = {
     "gmail": "https://mail.google.com",
     "email": "https://mail.google.com",
     "facebook": "https://facebook.com",
-    "whatsapp": "https://web.whatsapp.com",
     "instagram": "https://instagram.com",
     "twitter": "https://twitter.com",
     "x": "https://twitter.com",
     "amazon": "https://amazon.in",
-    "spotify": "https://open.spotify.com",
     "chatgpt": "https://chat.openai.com",
     "claude": "https://claude.ai",
     "github": "https://github.com",
@@ -127,31 +126,97 @@ APP_PATHS = {
     "code": [
         os.path.join(_HOME, "AppData", "Local", "Programs", "Microsoft VS Code", "Code.exe"),
         "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+        "C:\\Program Files (x86)\\Microsoft VS Code\\Code.exe",
+    ],
+    "whatsapp": [
+        os.path.join(_HOME, "AppData", "Local", "WhatsApp", "WhatsApp.exe"),
+        os.path.join(_HOME, "AppData", "Local", "Programs", "WhatsApp", "WhatsApp.exe"),
+        os.path.join(_HOME, "AppData", "Local", "Microsoft", "WindowsApps", "WhatsApp.exe"),
+        os.path.join(_HOME, "AppData", "Local", "Microsoft", "WindowsApps", "5319275A.WhatsAppDesktop_cv1g1gvanyjgm", "WhatsApp.exe"),
+    ],
+    "telegram": [
+        os.path.join(_HOME, "AppData", "Roaming", "Telegram Desktop", "Telegram.exe"),
+        os.path.join(_HOME, "AppData", "Local", "Programs", "Telegram Desktop", "Telegram.exe"),
+        os.path.join(_HOME, "AppData", "Local", "Telegram Desktop", "Telegram.exe"),
+    ],
+    "spotify": [
+        os.path.join(_HOME, "AppData", "Roaming", "Spotify", "Spotify.exe"),
+        os.path.join(_HOME, "AppData", "Local", "Microsoft", "WindowsApps", "Spotify.exe"),
+    ],
+    "discord": [
+        os.path.join(_HOME, "AppData", "Local", "Discord", "Update.exe"),
+    ],
+    "slack": [
+        os.path.join(_HOME, "AppData", "Local", "slack", "slack.exe"),
+    ],
+    "zoom": [
+        os.path.join(_HOME, "AppData", "Roaming", "Zoom", "bin", "Zoom.exe"),
+    ],
+    "chrome": [
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        os.path.join(_HOME, "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe"),
+    ],
+    "brave": [
+        "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+        os.path.join(_HOME, "AppData", "Local", "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+    ],
+    "edge": [
+        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
     ],
 }
 
+APP_PROTOCOLS = {
+    "whatsapp": "whatsapp:",
+    "spotify": "spotify:",
+    "telegram": "tg:",
+    "discord": "discord:",
+    "slack": "slack:",
+    "settings": "ms-settings:",
+    "calculator": "calculator:",
+    "calc": "calculator:",
+    "paint": "ms-paint:",
+    "photos": "ms-photos:",
+    "store": "ms-windows-store:",
+}
+
 APP_ALIASES = {
-    "chrome": "chrome", "browser": "chrome", "edge": "msedge",
-    "firefox": "firefox", "notepad": "notepad", "calculator": "calc",
-    "calc": "calc", "paint": "mspaint", "file explorer": "explorer",
-    "files": "explorer", "explorer": "explorer", "settings": "ms-settings:",
-    "control panel": "control", "task manager": "taskmgr", "terminal": "wt",
-    "command prompt": "cmd", "cmd": "cmd", "word": "winword",
-    "excel": "excel", "powerpoint": "powerpnt", "vlc": "vlc",
-    "code": "code", "vs code": "code", "vscode": "code",
-    "visual studio code": "code",
+    "chrome": "chrome", "google chrome": "chrome", "browser": "chrome",
+    "edge": "msedge", "msedge": "msedge", "microsoft edge": "msedge",
+    "firefox": "firefox", "brave": "brave", "notepad": "notepad",
+    "calculator": "calc", "calc": "calc", "paint": "mspaint",
+    "file explorer": "explorer", "files": "explorer", "explorer": "explorer",
+    "settings": "ms-settings:", "control panel": "control",
+    "task manager": "taskmgr", "taskmgr": "taskmgr", "terminal": "wt",
+    "command prompt": "cmd", "cmd": "cmd", "powershell": "powershell",
+    "word": "winword", "winword": "winword", "ms word": "winword",
+    "excel": "excel", "ms excel": "excel",
+    "powerpoint": "powerpnt", "powerpnt": "powerpnt", "ppt": "powerpnt",
+    "vlc": "vlc", "vlc media player": "vlc",
+    "code": "code", "vs code": "code", "vscode": "code", "visual studio code": "code",
+    "whatsapp": "whatsapp", "telegram": "telegram", "spotify": "spotify",
+    "discord": "discord", "slack": "slack", "zoom": "zoom", "teams": "teams",
 }
 
 
 def _normalize(text):
     s = text.lower().strip()
-    fillers = ["kholo", "khol do", "khol", "open karo", "open", "karo",
-               "chalao", "chala do", "start karo", "folder", "app",
-               "application", "please", "zara", "thoda", "mera", "meri",
+    fillers = ["khol do", "open karo", "chala do", "start karo", "kholo", "khol",
+               "open", "karo", "chalao", "folder", "application", "app",
+               "please", "zara", "thoda", "mera", "meri",
                "ko", "ka", "ki", "do", "de", "dedo", "dikhao", "dikha"]
+    # Remove multi-word phrases first with regex word boundaries
     for f in fillers:
-        s = s.replace(f, " ")
-    return " ".join(s.split())
+        if " " in f:
+            s = re.sub(r'\b' + re.escape(f) + r'\b', ' ', s)
+    # Filter single-word fillers
+    single_fillers = {f for f in fillers if " " not in f}
+    words = s.split()
+    filtered = [w for w in words if w not in single_fillers]
+    if filtered:
+        return " ".join(filtered)
+    return " ".join(words)
 
 
 def _find_in(target_dict, text):
@@ -166,22 +231,70 @@ def _find_in(target_dict, text):
 
 
 def _launch_windows(name):
-    if name.startswith("ms-"):
+    """Launch app on Windows trying protocol URI, APP_PATHS, os.startfile, start command, and shutil.which."""
+    # 1. Direct protocol URI (e.g. ms-settings:, whatsapp:)
+    if name.startswith("ms-") or name.endswith(":"):
         try:
             os.startfile(name)
             return True
         except Exception:
-            return False
+            try:
+                subprocess.Popen("start " + name, shell=True)
+                return True
+            except Exception:
+                pass
+
+    # 2. Known protocol mapping
+    if name in APP_PROTOCOLS:
+        proto = APP_PROTOCOLS[name]
+        try:
+            os.startfile(proto)
+            return True
+        except Exception:
+            try:
+                subprocess.Popen("start " + proto, shell=True)
+                return True
+            except Exception:
+                pass
+
+    # 3. Known executable disk paths
     if name in APP_PATHS:
         for path in APP_PATHS[name]:
             if os.path.exists(path):
-                subprocess.Popen([path])
-                return True
+                try:
+                    if "Discord" in path:
+                        subprocess.Popen([path, "--processStart", "Discord.exe"])
+                    else:
+                        subprocess.Popen([path])
+                    return True
+                except Exception:
+                    pass
+
+    # 4. Try os.startfile directly (handles Registered App Paths, Executables in PATH, App Execution Aliases)
     try:
         os.startfile(name)
         return True
     except Exception:
-        return False
+        pass
+
+    # 5. Try shell start command (Windows cmd start built-in)
+    try:
+        subprocess.Popen("start " + name, shell=True)
+        return True
+    except Exception:
+        pass
+
+    # 6. Try shutil.which
+    import shutil
+    exe_path = shutil.which(name)
+    if exe_path:
+        try:
+            subprocess.Popen([exe_path])
+            return True
+        except Exception:
+            pass
+
+    return False
 
 
 def open_app(args):
@@ -191,6 +304,7 @@ def open_app(args):
     name = _normalize(raw)
     print(f"[open_app] raw={raw} cleaned={name}")
 
+    # 1. Check FOLDERS
     key = _find_in(FOLDERS, name)
     if key:
         path = FOLDERS[key]
@@ -202,18 +316,20 @@ def open_app(args):
         except Exception as e:
             return f"{key} folder nahi khula: {e}"
 
-    key = _find_in(WEBSITES, name)
-    if key:
-        webbrowser.open(WEBSITES[key])
-        return f"{key} khol raha hoon..."
-
+    # 2. Check Native Desktop Applications FIRST!
     key = _find_in(APP_ALIASES, name)
     exe = APP_ALIASES.get(key, name) if key else name
 
     if platform.system() == "Windows":
         if _launch_windows(exe):
-            return f"{name} khol raha hoon..."
-        return f"{name} nahi mila."
+            return f"{key or name} khol raha hoon..."
+
+    # 3. Check WEBSITES as fallback (for web-only services like github, chatgpt, amazon)
+    key = _find_in(WEBSITES, name)
+    if key:
+        webbrowser.open(WEBSITES[key])
+        return f"{key} browser mein khol raha hoon..."
+
     return f"{name} nahi mila."
 
 

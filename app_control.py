@@ -70,33 +70,65 @@ def _active_region():
 
 
 # ---------- App launcher (whitelist) ----------
+_HOME = os.path.expanduser("~")
+
 APP_MAP = {
     "chrome": ["chrome"],
     "google chrome": ["chrome"],
     "browser": ["chrome"],
     "notepad": ["notepad"],
-    "calculator": ["calc"],
-    "calc": ["calc"],
+    "calculator": ["calculator:", "calc"],
+    "calc": ["calculator:", "calc"],
     "explorer": ["explorer"],
     "file explorer": ["explorer"],
     "files": ["explorer"],
     "cmd": ["cmd"],
     "command prompt": ["cmd"],
-    "terminal": ["cmd"],
+    "terminal": ["wt", "cmd"],
     "powershell": ["powershell"],
-    "vscode": ["code"],
-    "vs code": ["code"],
-    "code": ["code"],
+    "vscode": ["code", os.path.join(_HOME, "AppData", "Local", "Programs", "Microsoft VS Code", "Code.exe")],
+    "vs code": ["code", os.path.join(_HOME, "AppData", "Local", "Programs", "Microsoft VS Code", "Code.exe")],
+    "code": ["code", os.path.join(_HOME, "AppData", "Local", "Programs", "Microsoft VS Code", "Code.exe")],
     "word": ["winword"],
     "excel": ["excel"],
     "powerpoint": ["powerpnt"],
-    "paint": ["mspaint"],
+    "paint": ["ms-paint:", "mspaint"],
     "task manager": ["taskmgr"],
     "settings": ["ms-settings:"],
-    "whatsapp": ["whatsapp"],
-    "telegram": ["telegram"],
-    "spotify": ["spotify"],
-    "vlc": ["vlc"],
+    "whatsapp": [
+        "whatsapp:",
+        os.path.join(_HOME, "AppData", "Local", "WhatsApp", "WhatsApp.exe"),
+        os.path.join(_HOME, "AppData", "Local", "Programs", "WhatsApp", "WhatsApp.exe"),
+        os.path.join(_HOME, "AppData", "Local", "Microsoft", "WindowsApps", "WhatsApp.exe"),
+        "whatsapp",
+    ],
+    "telegram": [
+        "tg:",
+        os.path.join(_HOME, "AppData", "Roaming", "Telegram Desktop", "Telegram.exe"),
+        os.path.join(_HOME, "AppData", "Local", "Programs", "Telegram Desktop", "Telegram.exe"),
+        "telegram",
+    ],
+    "spotify": [
+        "spotify:",
+        os.path.join(_HOME, "AppData", "Roaming", "Spotify", "Spotify.exe"),
+        os.path.join(_HOME, "AppData", "Local", "Microsoft", "WindowsApps", "Spotify.exe"),
+        "spotify",
+    ],
+    "discord": [
+        "discord:",
+        os.path.join(_HOME, "AppData", "Local", "Discord", "Update.exe"),
+        "discord",
+    ],
+    "slack": [
+        "slack:",
+        os.path.join(_HOME, "AppData", "Local", "slack", "slack.exe"),
+        "slack",
+    ],
+    "vlc": [
+        "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
+        "C:\\Program Files (x86)\\VideoLAN\\VLC\\vlc.exe",
+        "vlc",
+    ],
 }
 
 
@@ -105,27 +137,30 @@ def open_app(name):
     if not IS_WIN:
         return "App control sirf Windows pe hai Boss."
     key = name.lower().strip()
-    cmd = APP_MAP.get(key)
-    if not cmd:
-        try:
-            subprocess.Popen("start " + key, shell=True)
-            return name + " khol raha hoon Boss."
-        except Exception as e:
-            return "App nahi mila: " + name
+    cmds = APP_MAP.get(key, [key])
 
-    try:
-        if cmd[0].endswith(":"):
-            os.startfile(cmd[0])
-        else:
-            subprocess.Popen(cmd, shell=False)
-        time.sleep(0.5)
-        return name + " khol diya Boss."
-    except Exception as e:
+    for target in cmds:
         try:
-            subprocess.Popen("start " + cmd[0], shell=True)
-            return name + " khol diya Boss."
+            if target.startswith("ms-") or target.endswith(":"):
+                os.startfile(target)
+                time.sleep(0.5)
+                return name + " khol diya Boss."
+            if os.path.isabs(target) and os.path.exists(target):
+                subprocess.Popen([target])
+                time.sleep(0.5)
+                return name + " khol diya Boss."
+            try:
+                os.startfile(target)
+                time.sleep(0.5)
+                return name + " khol diya Boss."
+            except Exception:
+                subprocess.Popen("start " + target, shell=True)
+                time.sleep(0.5)
+                return name + " khol diya Boss."
         except Exception:
-            return "Nahi khol paya: " + name + " - " + str(e)[:60]
+            continue
+
+    return "App nahi mila: " + name
 
 
 def close_app(name):

@@ -21,11 +21,11 @@ def _get_available_tools():
 TOOL_SCHEMAS = {
     "get_time": {},
     "get_weather": {"city": "str"},
-    "open_app": {"app_name": "str (chrome, notepad, calculator, vscode, vlc)"},
+    "open_app": {"app_name": "str (whatsapp, telegram, spotify, chrome, notepad, calculator, vscode, vlc, discord, word, excel, paint, explorer)"},
     "take_screenshot": {},
     "open_screenshots": {},
     "play_youtube": {"query": "str - plays FIRST video directly"},
-    "browse": {"task": "str (full English instruction for browser)"},
+    "browse": {"task": "str (full English instruction for browser automation - ONLY for websites/web-scraping like Amazon/Wikipedia, NEVER for installed desktop apps like WhatsApp, Telegram, Spotify, Notepad)"},
     "close_browser": {},
     "play_spotify": {"query": "str"},
     "volume_up": {"steps": "int"},
@@ -109,7 +109,7 @@ Available tools with ARG SCHEMAS:\n""" + _get_schema_text() + """
 
 CRITICAL - Use EXACT arg names from schema:
 - browse tool: args = {"task": "English instruction"}  (NOT "url")
-- open_app tool: args = {"app_name": "chrome"}  (NOT "name")
+- open_app tool: args = {"app_name": "whatsapp"}  (NOT "name")
 
 RULES:
 - Har step ek tool call hoga
@@ -118,11 +118,15 @@ RULES:
 - Max 6 steps
 - Agar goal single-step hai to 1 step do
 
-CRITICAL - Browser rules:
-- Agar goal mein "browse" tool use hoga (YouTube search, Google search, website visit), to open_app se chrome ALAG se MAT kholo. browse apna browser khud kholta hai.
-- open_app sirf tab use karo jab browser automation NA ho (jaise notepad kholo, calculator kholo)
-- "YouTube pe X dhundo" -> sirf browse tool (open_app mat do)
-- "Chrome kholo aur YouTube pe X dhundo" -> sirf browse tool, open_app skip karo
+CRITICAL - Desktop Apps vs Browser:
+- Installed desktop applications (WhatsApp, Telegram, Spotify, Discord, VS Code, Notepad, Calc, Word, Excel, VLC, File Explorer, etc.) MUST ALWAYS be opened using open_app (e.g. open_app(app_name="whatsapp")).
+- NEVER use browse tool for desktop apps like WhatsApp, Telegram, Spotify, Discord! The browse tool opens an isolated clean browser without user login sessions/cookies.
+- Use browse tool ONLY when the user explicitly asks to automate/scrape a website in the web browser (e.g. 'Amazon pe search karo', 'Wikipedia article padho').
+- If user asks to interact with an installed desktop app (e.g. 'WhatsApp kholke contacts dikhao' or 'WhatsApp kholke screenshot lo'):
+  Step 1: open_app {"app_name": "whatsapp"}
+  Step 2: read_screen {} OR take_screenshot {} OR click_text {"target": "..."}
+- Agar goal mein "browse" tool use hoga (web search, website visit), to open_app se chrome ALAG se MAT kholo. browse apna browser khud kholta hai.
+- open_app sirf tab use karo jab browser automation NA ho (jaise whatsapp kholo, notepad kholo, calculator kholo)
 - Har step mein ye JSON format: {"step": 1, "tool": "tool_name", "args": {...}, "description": "short hint"}
 
 Return SIRF JSON array, aur kuch nahi:
