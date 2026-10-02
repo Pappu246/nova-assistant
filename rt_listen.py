@@ -35,7 +35,21 @@ MAX_SPEECH_SEC = 30       # Max recording limit
 PRE_SPEECH_CHUNKS = 6     # ~192ms pre-speech audio buffer
 
 VAD_THRESHOLD = 0.38
-BARGE_IN_THRESHOLD = 0.60
+
+# ---- ECHO FIX (NOVA): barge-in ab NOVA ki apni TTS awaaz se trigger nahi hota ----
+# 1) Threshold 0.90: speaker echo ka VAD prob aksar 0.6-0.85 hota hai,
+#    seedha bola gaya user speech hi 0.90+ cross karta hai.
+BARGE_IN_THRESHOLD = 0.90
+# 2) Grace period 600ms: TTS start hote hi pehle ~600ms speaker ramp-up/echo
+#    ko poori tarah ignore karo (start_monitor_time check).
+BARGE_IN_GRACE_MS = 600
+# 3) 8 consecutive frames (~256ms) sustained speech chahiye - echo blips
+#    itne lambe sustained high-prob frames nahi dete.
+BARGE_IN_MIN_FRAMES = 8
+# 4) Energy gate: captured barge-in audio STT pe bhejne se pehle RMS check -
+#    NOVA ki speaker-echo awaaz mic pe door/halki hoti hai (low RMS),
+#    user ki seedhi awaaz loud hoti hai (high RMS).
+BARGE_IN_MIN_RMS = 500.0
 
 _vad_model = None
 _barge_in_active = False
@@ -78,6 +92,22 @@ def _calc_prob(model, chunk_int16):
     # Fallback energy-based probability
     rms = np.sqrt(np.mean(chunk_int16.astype(np.float32) ** 2))
     return min(1.0, float(rms / 800.0))
+
+
+def _audio_rms(audio_int16):
+    """RMS energy of an int16 audio buffer."""
+    if audio_int16 is None or len(audio_int16) == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(audio_int16.astype(np.float32) ** 2)))
+
+
+def _is_probable_user_speech(audio_int16):
+    """
+    ECHO FIX (NOVA): barge-in me captured audio NOVA ki apni speaker-echo
+    bhi ho sakti hai. Echo mic tak pahunchte-pahunchte halki (low RMS) hoti
+    hai, user ki seedhi awaaz loud. STT pe bhejne se pehle ye energy check.
+    """
+    return _audio_rms(audio_int16) >= BARGE_IN_MIN_RMS
 
 
 def listen_vad(timeout_sec=30, debug=False, initial_buffer=None):
@@ -207,6 +237,8 @@ def start_barge_in_monitor(on_barge_in):
 
         consecutive_speech = 0
         captured_chunks = []
+        # ECHO FIX (NOVA): grace period ka start time
+        start_monitor_time = time.time()
 
         try:
             stream = sd.InputStream(
@@ -228,12 +260,23 @@ def start_barge_in_monitor(on_barge_in):
                     break
 
                 flat = data.flatten()
+
+                # ECHO FIX (NOVA): grace period - TTS shuru hone ke pehle
+                # 600ms tak barge-in detection band (speaker ramp-up echo)
+                if (time.time() - start_monitor_time) * 1000.0 < BARGE_IN_GRACE_MS:
+                    consecutive_speech = 0
+                    captured_chunks = []
+                    continue
+
                 prob = _calc_prob(model, flat)
 
-                if prob > BARGE_IN_THRESHOLD:
+                # ECHO FIX (NOVA): frame speech tabhi mana jayega jab VAD prob
+                # high ho AUR frame ki energy user-speech level ki ho
+                # (NOVA ki echo awaaz low-energy hoti hai)
+                if prob > BARGE_IN_THRESHOLD and _audio_rms(flat) >= BARGE_IN_MIN_RMS:
                     consecutive_speech += 1
                     captured_chunks.append(flat)
-                    if consecutive_speech >= 3:
+                    if consecutive_speech >= BARGE_IN_MIN_FRAMES:
                         print("\n[rt_listen] 🛑 Voice Barge-In! Interrupting speech...")
                         if on_barge_in:
                             on_barge_in()
@@ -277,6 +320,14 @@ def stop_barge_in_monitor():
     _barge_in_thread = None
     captured = _barge_in_audio_captured
     _barge_in_audio_captured = None
+
+    # ECHO FIX (NOVA): captured audio STT pe bhejne se pehle energy check -
+    # agar ye NOVA ki apni echo jaisi halki awaaz hai (low RMS) to discard,
+    # warna echo transcribe hoke ghost-command ban jata hai.
+    if captured is not None and not _is_probable_user_speech(captured):
+        print("[rt_listen] Barge-in audio echo jaisa laga (low energy) - discard.")
+        return None
+
     return captured
 
 

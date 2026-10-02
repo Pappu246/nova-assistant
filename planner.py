@@ -129,6 +129,20 @@ CRITICAL - Desktop Apps vs Browser:
 - open_app sirf tab use karo jab browser automation NA ho (jaise whatsapp kholo, notepad kholo, calculator kholo)
 - Har step mein ye JSON format: {"step": 1, "tool": "tool_name", "args": {...}, "description": "short hint"}
 
+CRITICAL - WhatsApp / MESSAGING FLOW (SEND STEP KABHI MAT BHOOLNA):
+- Message sirf TYPE karna kaafi NAHI hai - type karne ke BAAD
+  press_key {"key": "enter"} se SEND karna ZAROORI hai!
+- "X ko message karo Y" / "X ko whatsapp pe Y bhejo" ka plan:
+  Step 1: open_app {"app_name": "whatsapp"}
+  Step 2: vision_click {"target": "search box"}      (contact search box)
+  Step 3: type_text {"text": "X"}                    (contact ka naam type)
+  Step 4: press_key {"key": "enter"}                 (contact ki chat kholo)
+  Step 5: type_text {"text": "Y"}                    (message box me message type)
+  Step 6: press_key {"key": "enter"}                 (MESSAGE SEND - FINAL STEP, kabhi skip mat karo!)
+- Chat me message type karne ke baad plan ka AAKHRI step HAMESHA
+  press_key {"key": "enter"} hona chahiye, warna message type hoke reh jayega, SEND nahi hoga.
+- Note: enter DO baar alag-alag jagah aa sakta hai (contact select + message send) - dono valid steps hain.
+
 Return SIRF JSON array, aur kuch nahi:
 [
   {"step": 1, "tool": "...", "args": {...}, "description": "..."},
@@ -176,6 +190,54 @@ def _extract_json_array(text):
     return None
 
 
+# ---- SEND FIX (NOVA): WhatsApp/message goals me final send-step ensure karo ----
+_MSG_GOAL_HINTS = ("message", "msg", "bhej", "send", "whatsapp", "likh")
+_TYPE_TOOLS = {"type_text", "type_in_field", "ui_type_in_field", "ui_set_text", "set_text"}
+
+
+def _is_enter_step(step):
+    if step.get("tool") not in ("press_key", "ui_press_key"):
+        return False
+    key = str((step.get("args") or {}).get("key", "")).lower()
+    return "enter" in key or "return" in key
+
+
+def _ensure_send_step(goal, steps):
+    """
+    SEND FIX (NOVA): 'X ko message karo Y' jaise goals me LLM aksar message
+    TYPE karwa deta hai par SEND (press_key enter) bhool jata hai.
+    Agar aakhri typing step ke baad koi enter/send step nahi hai,
+    to final press_key enter step append karo.
+    """
+    g = (goal or "").lower()
+    if not steps or not any(h in g for h in _MSG_GOAL_HINTS):
+        return steps
+
+    last_type_idx = None
+    for i, s in enumerate(steps):
+        if s.get("tool") in _TYPE_TOOLS:
+            last_type_idx = i
+    if last_type_idx is None:
+        return steps
+
+    # Kya last typing ke BAAD koi enter (send) step hai?
+    for s in steps[last_type_idx + 1:]:
+        if _is_enter_step(s):
+            return steps
+
+    print("[planner] SEND FIX: message type ke baad send-step missing tha - press_key enter add kiya")
+    steps.append({
+        "step": len(steps) + 1,
+        "tool": "press_key",
+        "args": {"key": "enter"},
+        "description": "Message SEND karo (Enter)",
+        "status": "pending",
+    })
+    for i, s in enumerate(steps, 1):
+        s["step"] = i
+    return steps
+
+
 def create_plan(goal, context=None):
     """Return list of steps. context may contain replan info."""
     goal = (goal or "").strip()
@@ -217,6 +279,9 @@ Try a DIFFERENT approach for the failed step.
             "description": step.get("description", ""),
             "status": "pending",
         })
+
+    # SEND FIX (NOVA): messaging goals me final send (enter) step ensure karo
+    valid = _ensure_send_step(goal, valid)
 
     return valid
 

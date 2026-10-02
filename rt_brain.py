@@ -20,7 +20,7 @@ except Exception:
     def _synthesize(q, r): return str(r)
 
 from tools import TOOLS
-from think import _build_tool_list, _extract_json
+from think import _build_tool_list, _extract_json, fit_messages
 
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_FALLBACK = "openai/gpt-oss-20b"
@@ -50,6 +50,37 @@ AVAILABLE TOOLS:
 {tool_list}
 
 Respond with a single clean JSON object."""
+
+
+def _chat_completion_with_json_fallback(client, model, messages,
+                                        temperature=0.4, max_tokens=400, timeout=15):
+    """
+    GROQ 400 FIX (NOVA): openai/gpt-oss-120b kabhi-kabhi response_format
+    json_object pe 'Error 400: Failed to generate JSON' deta hai.
+    Pehle JSON mode try karo; 400/json fail pe BINA response_format retry.
+    (_extract_json plain-text reply se bhi JSON nikal leta hai.)
+    """
+    try:
+        return client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+            timeout=timeout,
+        )
+    except Exception as e:
+        err_low = str(e).lower()
+        if not ("json" in err_low or "400" in err_low or "response_format" in err_low):
+            raise
+        print("[rt_brain] json mode fail (" + str(e)[:60] + ") - retry WITHOUT response_format")
+        return client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
 
 
 def _save_mem(user_text, nova_text):
@@ -128,22 +159,17 @@ def stream_reply(user_text, history=None):
     except Exception:
         pass
 
-    messages = [{"role": "system", "content": system_prompt}]
-    for h in history[-8:]:
-        messages.append(h)
-    messages.append({"role": "user", "content": user_text})
+    # 413 FIX: request strictly <8000 tokens (system rakho, purane msgs drop)
+    messages = fit_messages(system_prompt, history[-8:], user_text)
 
     client = Groq(api_key=key)
 
     for model in [GROQ_MODEL, GROQ_FALLBACK]:
         try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.4,
-                max_tokens=400,
-                response_format={"type": "json_object"},
-                timeout=15,
+            # GROQ 400 FIX: json_object fail ho to bina response_format retry
+            resp = _chat_completion_with_json_fallback(
+                client, model, messages,
+                temperature=0.4, max_tokens=400, timeout=15,
             )
 
             raw = resp.choices[0].message.content.strip()

@@ -58,23 +58,76 @@ def clear_task_history():
     return "Task history cleared."
 
 
-def _deduplicate_plan(plan):
-    """Remove consecutive duplicate tool+args steps."""
-    if not plan or len(plan) < 2:
+def _step_key(step):
+    return (step.get("tool"), str(step.get("args", {})))
+
+
+def _deduplicate_plan(plan, completed_keys=None):
+    """
+    DEDUP FIX (NOVA): sirf wo steps skip karo jo pehle SUCCESSFULLY complete
+    ho chuke hain (completed_keys). Jo steps sirf TRY hue the (fail/retry),
+    unhe dobara chalne do - warna WhatsApp jaisa flow toot jata hai jahan
+    press_key enter do baar chahiye (contact select + message send).
+    Within-plan sirf IMMEDIATE-consecutive identical duplicates hataye jate hain.
+    """
+    if not plan:
         return plan
-    seen = set()
+    completed_keys = completed_keys or set()
     out = []
+    prev_key = None
     for s in plan:
-        key = (s["tool"], str(s.get("args", {})))
-        if key in seen:
-            print(f"[agent] Skipping duplicate step: {s['tool']} {s.get('args', {})}")
+        key = _step_key(s)
+        if key in completed_keys:
+            print(f"[agent] Skipping already-SUCCEEDED step: {s['tool']} {s.get('args', {})}")
             continue
-        seen.add(key)
+        if key == prev_key:
+            print(f"[agent] Skipping consecutive duplicate step: {s['tool']} {s.get('args', {})}")
+            continue
+        prev_key = key
         out.append(s)
     # Renumber
     for i, s in enumerate(out, 1):
         s["step"] = i
     return out
+
+
+# ---- FOCUS FIX (NOVA): vision click se pehle target app window focus karo ----
+# Warna active-window / fullscreen fallback TERMINAL ya galat window pe
+# click kar deta hai.
+_FOCUS_BEFORE_CLICK_TOOLS = {
+    "vision_click", "click_text", "double_click_text", "right_click_text",
+}
+
+_APP_WINDOW_TITLES = {
+    "whatsapp": "WhatsApp",
+    "telegram": "Telegram",
+    "spotify": "Spotify",
+    "chrome": "Chrome",
+    "brave": "Brave",
+    "edge": "Edge",
+    "notepad": "Notepad",
+    "discord": "Discord",
+    "slack": "Slack",
+    "code": "Visual Studio Code",
+    "vscode": "Visual Studio Code",
+    "vlc": "VLC",
+    "word": "Word",
+    "excel": "Excel",
+}
+
+
+def _focus_target_app(app_name):
+    """Target app ki window ko front pe lao (app_control.focus_window)."""
+    if not app_name:
+        return
+    try:
+        import app_control
+        title = _APP_WINDOW_TITLES.get(str(app_name).strip().lower(), str(app_name).strip())
+        r = app_control.focus_window(title)
+        print("[agent] Focus before click ('" + title + "'): " + str(r)[:60])
+        time.sleep(0.4)
+    except Exception as e:
+        print("[agent] focus-before-click skip: " + str(e)[:50])
 
 
 def _execute_single_step(step):
@@ -168,11 +221,15 @@ def run_task(goal, on_step=None, force=False):
 
     all_results = []
     replan_count = 0
+    # DEDUP FIX (NOVA): sirf successfully-completed step keys yahan jama hote hain
+    completed_keys = set()
+    # FOCUS FIX (NOVA): last open kiya hua app yaad rakho (click se pehle focus)
+    last_app = None
 
     # First plan
     plan = planner.create_plan(goal, context=None)
     # Deduplicate consecutive same tool calls
-    plan = _deduplicate_plan(plan)
+    plan = _deduplicate_plan(plan, completed_keys)
 
     success_final = False
     while True:
@@ -183,7 +240,7 @@ def run_task(goal, on_step=None, force=False):
             return result_msg
 
         plan = _filter_plan(plan)
-        plan = _deduplicate_plan(plan)
+        plan = _deduplicate_plan(plan, completed_keys)
         if not plan:
             state.complete_task("failed")
             result_msg = "Boss, plan ke saare steps skip ho gaye."
@@ -224,6 +281,11 @@ def run_task(goal, on_step=None, force=False):
             if policy.requires_confirmation(step["tool"], step.get("args")):
                 print("[agent] Step " + str(step["step"]) + " auto-approved (agent mode): " + step["tool"])
 
+            # FOCUS FIX (NOVA): vision/OCR click se pehle target app focus karo,
+            # warna fullscreen fallback terminal pe click kar deta hai
+            if step["tool"] in _FOCUS_BEFORE_CLICK_TOOLS and last_app:
+                _focus_target_app(last_app)
+
             # Execute with retries
             success, result, reason = _execute_single_step(step)
             state.record_action(step["tool"] + " " + str(step.get("args")))
@@ -239,6 +301,13 @@ def run_task(goal, on_step=None, force=False):
 
             if success:
                 print("[agent] Step " + str(step["step"]) + " OK: " + reason)
+                # DEDUP FIX (NOVA): sirf SUCCEEDED steps future dedup me count hote hain
+                completed_keys.add(_step_key(step))
+                # FOCUS FIX (NOVA): kaunsa app khula/focus hua track karo
+                if step["tool"] == "open_app":
+                    last_app = (step.get("args") or {}).get("app_name") or last_app
+                elif step["tool"] in ("focus_window", "ui_focus_window", "ui_focus_app"):
+                    last_app = (step.get("args") or {}).get("title") or last_app
             else:
                 print("[agent] Step " + str(step["step"]) + " FAILED: " + reason)
                 failed_step = step
@@ -267,7 +336,8 @@ def run_task(goal, on_step=None, force=False):
             break
 
         plan = new_plan
-        plan = _deduplicate_plan(plan)
+        # DEDUP FIX (NOVA): replan me sirf pehle-SUCCEEDED steps skip hote hain
+        plan = _deduplicate_plan(plan, completed_keys)
 
     # Build summary
     success_count = sum(1 for r in all_results if r["status"] == "success")
