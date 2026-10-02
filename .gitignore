@@ -37,3 +37,10 @@ rt_stt_local_backup.py
 # Backup files
 *.bak
 *_backup.py
+
+# NOVA personal data - KABHI commit mat karo (public repo!)
+comms_config.json
+contacts.json
+calendar.json
+mood_history.json
+nova_backup_*/
