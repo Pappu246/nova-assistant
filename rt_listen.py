@@ -88,6 +88,13 @@ def listen_vad(timeout_sec=30, debug=False, initial_buffer=None):
     if not _SD:
         return None, 0
 
+    # SEGFAULT FIX (NOVA): purana barge-in monitor join karke band karo,
+    # phir hi nayi InputStream open karo (dual-open crash fix)
+    try:
+        stop_barge_in_monitor()
+    except Exception:
+        pass
+
     model = _load_vad()
     if model and _TORCH:
         try:
@@ -251,9 +258,23 @@ def start_barge_in_monitor(on_barge_in):
 
 
 def stop_barge_in_monitor():
-    """Stop barge-in monitor and return any audio captured during interruption."""
-    global _barge_in_active, _barge_in_audio_captured
+    """Stop barge-in monitor and return any audio captured during interruption.
+
+    """ + "SEGFAULT FIX (NOVA): monitor thread apni InputStream finally block" + """
+    me khud band karta hai - yahan JOIN lete hain taaki stream 100% band ho,
+    tabhi listen_vad nayi kholta hai (dual-InputStream crash fix).
+    """
+    global _barge_in_active, _barge_in_thread, _barge_in_audio_captured
     _barge_in_active = False
+    if _barge_in_thread is not None and _barge_in_thread.is_alive():
+        for _ in range(6):
+            try:
+                _barge_in_thread.join(timeout=0.25)
+            except Exception:
+                pass
+            if not _barge_in_thread.is_alive():
+                break
+    _barge_in_thread = None
     captured = _barge_in_audio_captured
     _barge_in_audio_captured = None
     return captured

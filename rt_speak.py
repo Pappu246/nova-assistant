@@ -85,11 +85,10 @@ def stop_speaking():
     _stop_flag.set()
     _clear_queue()
     _do_stop()
-    try:
-        if _SD:
-            sd.stop()
-    except Exception:
-        pass
+    # SEGFAULT FIX (NOVA): global sounddevice stop yahan se kabhi NAHI
+    # hota - barge-in monitor thread se global player touch karna
+    # hi Windows PortAudio crash tha. Worker apni stream khud
+    # band kar deta hai (~30ms).
     _speaking_flag.clear()
 
 
@@ -196,13 +195,19 @@ def _play(path):
             data = data.mean(axis=1)
         if _stop_flag.is_set():
             return
+        # SEGFAULT FIX (NOVA): global stream handle access hata diya -
+        # duration-based wait. Stop sirf isi worker thread se.
         sd.play(data, sr)
-        stream = sd.get_stream()
-        while stream is not None and stream.active:
+        duration = len(data) / float(sr)
+        start_t = time.time()
+        while (time.time() - start_t) < duration:
             if _stop_flag.is_set():
-                sd.stop()
                 break
-            time.sleep(0.02)
+            time.sleep(0.03)
+        try:
+            sd.stop()
+        except Exception:
+            pass
     except Exception as e:
         print("[rt_speak] play fail:", str(e)[:80])
 
