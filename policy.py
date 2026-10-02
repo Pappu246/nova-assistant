@@ -2,6 +2,7 @@
 NOVA Policy - sirf DANGEROUS actions pe confirmation.
 Baaki sab auto-execute.
 """
+import re
 import threading
 
 SAFE = "safe"
@@ -26,8 +27,28 @@ SAFE_TOOLS = {
     "read_screen_full", "find_fullscreen",
     "close_app", "focus_window", "list_windows", "press_key",
     "youtube_search", "google_search", "open_url", "screenshot",
-    "live_data", "live_news", "live_crypto", "live_stock",
+    "live_data", "live_news", "live_crypto", "live_stock", "live_weather",
+    # Comms - WhatsApp message bhejना SAFE hai (user ne khud bola hota hai)
+    "whatsapp_send", "whatsapp_reply",
+    "calendar_add", "calendar_list", "calendar_delete", "save_contact",
+    # Semantic memory + mood
+    "semantic_remember", "semantic_recall",
+    "mood_history", "get_mood_history",
 }
+
+# ---- ui_* tools (Phase 2 App Control) - sab SAFE ----
+_UI_TOOL_BASE = [
+    "list_windows", "get_active_window", "focus_window", "list_controls",
+    "find_element", "click_element", "double_click_element", "right_click_element",
+    "type_in_field", "set_text", "get_text", "get_window_text",
+    "press_key", "hotkey", "menu_click", "select_dropdown",
+    "check_checkbox", "get_checkbox_state", "scroll", "drag_drop",
+    "wait_for_window", "wait_for_element", "close_window",
+    "minimize_window", "maximize_window", "get_element_info",
+    "highlight_element", "screenshot_window",
+    "read_window_text", "click_text", "read_screen", "find_text", "focus_app",
+]
+SAFE_TOOLS.update("ui_" + n for n in _UI_TOOL_BASE)
 
 # ---- ASK: needs confirmation (system + app control + typing) ----
 ASK_TOOLS = {
@@ -35,6 +56,7 @@ ASK_TOOLS = {
     "shutdown_pc",
     "open_app",
     "type_text",
+    "send_email",   # email bhejne se pehle confirm karo
 }
 
 # ---- BLOCK patterns (hard block) ----
@@ -58,6 +80,9 @@ def classify(tool_name, args=None):
     if tool_name in ASK_TOOLS:
         return ASK
     if tool_name in SAFE_TOOLS:
+        return SAFE
+    # ui_* UI-automation tools hamesha safe (read/click/type in UI)
+    if tool_name.startswith("ui_"):
         return SAFE
     # Unknown tool - default ASK (safe default for tests / safety)
     return ASK
@@ -116,13 +141,20 @@ def clear_pending():
         _pending.clear()
 
 
-def is_yes(text):
+def _clean_yesno_text(text):
+    """Punctuation hatao taaki 'haan!', 'yes.', 'okey?' bhi match ho."""
     text = (text or "").lower().strip()
+    text = re.sub(r"[^\w\s]", " ", text)
+    return " ".join(text.split())
+
+
+def is_yes(text):
+    text = _clean_yesno_text(text)
     if not text:
         return False
     words = set(text.split())
     exact_yes = {"haan", "han", "yes", "yep", "ok", "okay", "theek",
-                 "ha", "chalega", "sure", "okey"}
+                 "ha", "haa", "chalega", "sure", "okey"}
     if words & exact_yes:
         return True
     phrases = ["kar do", "go ahead", "haan bolo", "haan kar", "theek hai"]
@@ -130,7 +162,7 @@ def is_yes(text):
 
 
 def is_no(text):
-    text = (text or "").lower().strip()
+    text = _clean_yesno_text(text)
     if not text:
         return False
     words = set(text.split())

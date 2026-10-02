@@ -688,6 +688,108 @@ def live_stock(args):
     return get_stock(symbol)
 
 
+def live_weather(args):
+    """Get LIVE weather (open-meteo, no API key). Args: {city}."""
+    city = (args or {}).get("city", "Jaipur")
+    try:
+        import live_data as _ld
+        return _ld.get_weather_live(city)
+    except Exception as e:
+        return "Weather fetch fail: " + str(e)[:80]
+
+
+# ============ LATE-BOUND TOOL WIRING ============
+# Ye tools call-time pe resolve hote hain (late-bound) taaki heavy/optional
+# modules (pywinauto, chromadb, smtplib config, etc.) import-time pe na lagein
+# aur ek module fail hone se poora tools.py na toote.
+
+def _lazy_tool(module_name, func_name, label=None):
+    """Return a wrapper that resolves module.func at CALL time (late-bound)."""
+    label = label or (module_name + "." + func_name)
+
+    def _call(args=None):
+        try:
+            import importlib
+            mod = importlib.import_module(module_name)
+            fn = getattr(mod, func_name)
+        except Exception as e:
+            return label + " load nahi hua: " + str(e)[:60]
+        try:
+            return fn(args or {})
+        except Exception as e:
+            return label + " fail: " + str(e)[:80]
+    return _call
+
+
+# ---- ui_* tools (Phase 2 App Control) - ui_agent.py se late-bound ----
+UI_TOOL_FUNCS = [
+    "list_windows", "get_active_window", "focus_window", "list_controls",
+    "find_element", "click_element", "double_click_element", "right_click_element",
+    "type_in_field", "set_text", "get_text", "get_window_text",
+    "press_key", "hotkey", "menu_click", "select_dropdown",
+    "check_checkbox", "get_checkbox_state", "scroll", "drag_drop",
+    "wait_for_window", "wait_for_element", "close_window",
+    "minimize_window", "maximize_window", "get_element_info",
+    "highlight_element", "screenshot_window",
+]
+
+
+def _ui_extra_read_window_text(args=None):
+    """Alias: window ka poora text padho (ui_agent.get_window_text)."""
+    return _lazy_tool("ui_agent", "get_window_text", "ui_read_window_text")(args)
+
+
+def _ui_extra_click_text(args=None):
+    """OCR click via vision_control (active window)."""
+    a = args or {}
+    try:
+        import vision_control as _vc
+        return _vc.click_text(a.get("target", ""), a.get("nth", 0),
+                              region_mode=a.get("region_mode", "active"))
+    except Exception as e:
+        return "ui_click_text fail: " + str(e)[:80]
+
+
+def _ui_extra_read_screen(args=None):
+    a = args or {}
+    try:
+        import vision_control as _vc
+        return _vc.read_screen(region_mode=a.get("region_mode", "active"))
+    except Exception as e:
+        return "ui_read_screen fail: " + str(e)[:80]
+
+
+def _ui_extra_find_text(args=None):
+    a = args or {}
+    try:
+        import vision_control as _vc
+        return str(_vc.find_text_on_screen(a.get("target", ""),
+                                           region_mode=a.get("region_mode", "active")))
+    except Exception as e:
+        return "ui_find_text fail: " + str(e)[:80]
+
+
+def _ui_extra_focus_app(args=None):
+    """App window ko front pe lao (app_control.focus_window)."""
+    a = args or {}
+    try:
+        import app_control as _ac
+        return _ac.focus_window(a.get("title") or a.get("app_name") or a.get("name", ""))
+    except Exception as e:
+        return "ui_focus_app fail: " + str(e)[:80]
+
+
+UI_EXTRA_TOOLS = {
+    "ui_read_window_text": _ui_extra_read_window_text,
+    "ui_click_text": _ui_extra_click_text,
+    "ui_read_screen": _ui_extra_read_screen,
+    "ui_find_text": _ui_extra_find_text,
+    "ui_focus_app": _ui_extra_focus_app,
+}
+
+UI_TOOL_NAMES = ["ui_" + n for n in UI_TOOL_FUNCS] + list(UI_EXTRA_TOOLS.keys())
+
+
 TOOLS = {
     "get_time": get_time,
     "get_weather": get_weather,
@@ -749,4 +851,29 @@ TOOLS = {
     "unmute": lambda a: app_control.unmute(),
     "toggle_mute": lambda a: app_control.toggle_mute(),
     "is_muted": lambda a: ("Muted" if app_control.is_muted() else "Unmuted"),
+
+    # ---- Live weather (open-meteo, no API key) ----
+    "live_weather": live_weather,
+
+    # ---- Comms (Phase 5) - late-bound from comms_agent ----
+    "send_email": _lazy_tool("comms_agent", "send_email", "send_email"),
+    "whatsapp_send": _lazy_tool("comms_agent", "whatsapp_send", "whatsapp_send"),
+    "whatsapp_reply": _lazy_tool("comms_agent", "whatsapp_reply", "whatsapp_reply"),
+    "calendar_add": _lazy_tool("comms_agent", "calendar_add", "calendar_add"),
+    "calendar_list": _lazy_tool("comms_agent", "calendar_list", "calendar_list"),
+    "calendar_delete": _lazy_tool("comms_agent", "calendar_delete", "calendar_delete"),
+    "save_contact": _lazy_tool("comms_agent", "save_contact", "save_contact"),
+
+    # ---- Semantic memory (Phase 4) - late-bound from semantic_memory ----
+    "semantic_remember": _lazy_tool("semantic_memory", "semantic_remember", "semantic_remember"),
+    "semantic_recall": _lazy_tool("semantic_memory", "semantic_recall", "semantic_recall"),
+
+    # ---- Mood / Emotion (Phase 6) - late-bound from emotion ----
+    "mood_history": _lazy_tool("emotion", "mood_history_tool", "mood_history"),
+    "get_mood_history": _lazy_tool("emotion", "mood_history_tool", "get_mood_history"),
 }
+
+# ---- ui_* tools (Phase 2) - 25+ UI automation tools, late-bound resolve ----
+for _ui_fn in UI_TOOL_FUNCS:
+    TOOLS["ui_" + _ui_fn] = _lazy_tool("ui_agent", _ui_fn, "ui_" + _ui_fn)
+TOOLS.update(UI_EXTRA_TOOLS)

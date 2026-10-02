@@ -67,6 +67,31 @@ TOOL_SPECS = {
     "read_screen": "OCR read ACTIVE WINDOW text. Args: {}",
     "find_on_screen": "Find text in ACTIVE WINDOW. Args: {target: str}",
     "smart_action": "Keyboard shortcuts for common tasks (save, copy, paste, undo, fullscreen). Args: {intent: str}",
+    # ---- Live weather ----
+    "live_weather": "LIVE weather via open-meteo (no API key). Args: {city: str}. USE FOR 'aaj ka mausam', 'Jaipur weather'.",
+    # ---- Comms (Phase 5) ----
+    "send_email": "Send email via Gmail SMTP. Args: {to: str (email or saved contact name), subject: str, body: str}. USE FOR 'email bhejo', 'mail karo'. Needs confirmation.",
+    "whatsapp_send": "Send WhatsApp message to contact/number. Args: {contact: str, message: str}. USE FOR 'X ko whatsapp karo', 'message bhejo'.",
+    "whatsapp_reply": "Reply in last open WhatsApp chat. Args: {message: str}",
+    "calendar_add": "Add calendar event. Args: {title: str, when: str (e.g. 'kal 6 baje', '25 dec 10 baje')}",
+    "calendar_list": "List calendar events. Args: {when: str (today/tomorrow/all)}",
+    "calendar_delete": "Delete calendar event. Args: {title: str}",
+    "save_contact": "Save a contact. Args: {name: str, phone: str, email: str}",
+    # ---- Semantic memory (Phase 4) ----
+    "semantic_remember": "Store a fact/memory semantically (vector DB). Args: {text: str, category: str}",
+    "semantic_recall": "Semantic search in long-term memory. Args: {query: str, n: int}. USE FOR 'yaad hai...', 'maine kya bataya tha'.",
+    # ---- Mood (Phase 6) ----
+    "mood_history": "Boss ke recent mood ka report. Args: {}. USE FOR 'mera mood kaisa tha', 'mood history'.",
+    "get_mood_history": "Same as mood_history - recent mood report. Args: {}",
+    # ---- ui_* App Control (Phase 2) - pywinauto based, precise UI automation ----
+    "ui_click_element": "Click a UI control by name in an app window (pywinauto). Args: {window: str, control: str}",
+    "ui_type_in_field": "Type text into a named field of an app window. Args: {window: str, field: str, text: str}",
+    "ui_menu_click": "Click app menu path like 'File->Save'. Args: {window: str, path: str}",
+    "ui_list_controls": "List all controls/buttons/fields of a window. Args: {window: str}",
+    "ui_read_window_text": "Read all text of an app window. Args: {window: str}",
+    "ui_focus_window": "Focus/bring a window to front. Args: {title: str}",
+    "ui_press_key": "Press key(s) in focused window. Args: {key: str}",
+    "ui_scroll": "Scroll in a window. Args: {window: str, direction: str, amount: int}",
 }
 
 
@@ -76,6 +101,51 @@ def _build_tool_list():
         if name in TOOLS:
             lines.append("- " + name + ": " + desc)
     return "\n".join(lines)
+
+
+# ============ 413 FIX: REQUEST SIZE CAP ============
+# Groq 413 (request too large) se bachne ke liye - poora request
+# strictly < max_tokens (approx 4 chars/token) rakha jata hai.
+
+FIT_MAX_TOKENS = 8000      # hard cap - request isse chhota hona chahiye
+_CHARS_PER_TOKEN = 4       # rough estimate: ~4 chars per token
+SYSTEM_CHAR_CAP = 14000    # system prompt cap
+USER_CHAR_CAP = 800        # user message cap
+HISTORY_MSG_CHAR_CAP = 4000  # single history message cap
+
+
+def fit_messages(system_prompt, history, user_message, max_tokens=FIT_MAX_TOKENS):
+    """
+    Build LLM messages list that fits strictly under max_tokens (~4 chars/token).
+    - System message HAMESHA rakha jata hai (capped).
+    - User message capped.
+    - History NEWEST-first rakhi jati hai; purane messages pehle hataye jate hain.
+    Returns: [{"role": "system", ...}, <history...>, {"role": "user", ...}]
+    """
+    sys_txt = str(system_prompt or "")[:SYSTEM_CHAR_CAP]
+    usr_txt = str(user_message or "")[:USER_CHAR_CAP]
+
+    # Safety margin taaki total STRICTLY < max_tokens rahe
+    budget_chars = max(0, max_tokens * _CHARS_PER_TOKEN - 400)
+    used = len(sys_txt) + len(usr_txt)
+
+    kept = []
+    for h in reversed(list(history or [])):
+        try:
+            content = str(h.get("content", ""))[:HISTORY_MSG_CHAR_CAP]
+            role = h.get("role", "user")
+        except Exception:
+            continue
+        if used + len(content) > budget_chars:
+            break  # purane messages drop (newest pehle rakhe ja chuke)
+        kept.append({"role": role, "content": content})
+        used += len(content)
+    kept.reverse()
+
+    msgs = [{"role": "system", "content": sys_txt}]
+    msgs.extend(kept)
+    msgs.append({"role": "user", "content": usr_txt})
+    return msgs
 
 
 # ============ SYSTEM PROMPT ============
@@ -246,24 +316,37 @@ def think(user_message, history=None, strict_json=True):
     if mem:
         system_prompt += mem
 
-    messages = [{"role": "system", "content": system_prompt}]
-    if history:
-        for h in history[-6:]:
-            messages.append(h)
-    messages.append({"role": "user", "content": user_message})
+    # 413 FIX: request ko strictly <8000 tokens pe cap karo
+    messages = fit_messages(system_prompt, (history or [])[-6:], user_message)
 
     client = Groq(api_key=key)
 
     for model in [GROQ_MODEL, GROQ_FALLBACK]:
         try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=500,
-                response_format={"type": "json_object"} if strict_json else None,
-                timeout=20,
-            )
+            try:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=500,
+                    response_format={"type": "json_object"} if strict_json else None,
+                    timeout=20,
+                )
+            except Exception as je:
+                # GROQ 400 FIX: json_object response_format fail
+                # ("Failed to generate JSON") -> bina response_format retry
+                err_low = str(je).lower()
+                if not (strict_json and ("json" in err_low or "400" in err_low
+                                         or "response_format" in err_low)):
+                    raise
+                print("[think] json mode fail, retrying without response_format: " + str(je)[:60])
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=500,
+                    timeout=20,
+                )
             raw = resp.choices[0].message.content.strip()
             decision = _extract_json(raw)
 

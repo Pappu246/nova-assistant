@@ -49,6 +49,21 @@ _SUCCESS_HINTS = {
     "live_news": ["news"],
     "live_crypto": ["price", "$", "rs"],
     "live_stock": ["price", "$", "("],
+    "live_weather": ["degree", "temperature", "mausam", "humidity"],
+    # Comms (Phase 5)
+    "send_email": ["bhej", "email", "mail"],
+    "whatsapp_send": ["whatsapp", "bhej", "ready", "khola", "search"],
+    "whatsapp_reply": ["whatsapp", "reply", "bhej"],
+    "calendar_add": ["add", "calendar", "event"],
+    "calendar_list": ["event", "calendar", "koi"],
+    "calendar_delete": ["delete", "hata"],
+    "save_contact": ["save", "contact"],
+    # Semantic memory (Phase 4)
+    "semantic_remember": ["yaad", "save", "semantic"],
+    "semantic_recall": [],  # Always success if it returns text
+    # Mood (Phase 6)
+    "mood_history": ["mood"],
+    "get_mood_history": ["mood"],
 }
 
 _FAILURE_HINTS = [

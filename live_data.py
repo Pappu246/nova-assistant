@@ -118,6 +118,71 @@ def get_crypto(coin="bitcoin"):
         return "Crypto fetch fail: " + str(e)[:80]
 
 
+# ============ 2b. WEATHER (Open-Meteo, no API key) ============
+
+_WEATHER_CODES = {
+    0: "saaf aasman", 1: "zyada tar saaf", 2: "thode baadal", 3: "baadal chhaye hue",
+    45: "kohra", 48: "jamne wala kohra",
+    51: "halki boondabandi", 53: "boondabandi", 55: "tez boondabandi",
+    61: "halki baarish", 63: "baarish", 65: "tez baarish",
+    71: "halki barfbari", 73: "barfbari", 75: "tez barfbari",
+    80: "baarish ke jhonke", 81: "baarish ke jhonke", 82: "tez baarish ke jhonke",
+    95: "aandhi-toofan", 96: "olon ke saath toofan", 99: "olon ke saath tez toofan",
+}
+
+
+def get_weather_live(city="Jaipur"):
+    """Live weather from Open-Meteo (free, no API key).
+    Returns temp + humidity + wind + condition for the city."""
+    city = str(city or "Jaipur").strip() or "Jaipur"
+    try:
+        geo_url = ("https://geocoding-api.open-meteo.com/v1/search?name=" +
+                   urllib.parse.quote(city) + "&count=1")
+        req = urllib.request.Request(geo_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            geo = json.loads(r.read())
+        if not geo.get("results"):
+            return city + " ka location nahi mila."
+        loc = geo["results"][0]
+        lat, lon = loc["latitude"], loc["longitude"]
+
+        url = ("https://api.open-meteo.com/v1/forecast?latitude=" + str(lat) +
+               "&longitude=" + str(lon) +
+               "&current=temperature_2m,relative_humidity_2m,apparent_temperature,"
+               "weather_code,wind_speed_10m")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+
+        cur = data.get("current", {})
+        temp = cur.get("temperature_2m")
+        feels = cur.get("apparent_temperature")
+        hum = cur.get("relative_humidity_2m")
+        wind = cur.get("wind_speed_10m")
+        cond = _WEATHER_CODES.get(cur.get("weather_code"), "")
+
+        parts = [city + " mein abhi " + str(temp) + " degree C hai"]
+        if cond:
+            parts.append(cond)
+        if feels is not None:
+            parts.append("feel hota hai " + str(feels) + " degree")
+        if hum is not None:
+            parts.append("humidity " + str(hum) + "%")
+        if wind is not None:
+            parts.append("hawa " + str(wind) + " km/h")
+        return ", ".join(parts) + "."
+    except Exception as e:
+        return "Weather fetch fail: " + str(e)[:80]
+
+
+# ============ 2c. SPORTS (Google News RSS sports feed) ============
+
+def get_sports(query="cricket", limit=5):
+    """Live sports headlines/scores via Google News RSS (no API key)."""
+    query = str(query or "cricket").strip() or "cricket"
+    return get_news(query + " score latest", limit=limit)
+
+
 # ============ 3. STOCK (Yahoo Finance) ============
 
 _COMMON_TICKERS = {
@@ -238,6 +303,17 @@ def _detect_intent(query):
     if "stock" in q or "share price" in q:
         return ("stock", q.replace("stock", "").replace("price", "").strip())
 
+    # Weather
+    if any(w in q for w in ["weather", "mausam", "temperature", "baarish", "garmi", "sardi"]):
+        subject = re.sub(r"(weather|mausam|temperature|baarish|garmi|sardi|kaisa|kaisi|hai|ka|ki|aaj|abhi|mein|me|\?)",
+                         " ", q)
+        subject = " ".join(subject.split()).strip()
+        return ("weather", subject or "Jaipur")
+
+    # Sports score
+    if any(w in q for w in ["score", "match", "cricket score", "kaun jeeta"]):
+        return ("sports", q.replace("score", "").replace("match", "").strip() or "cricket")
+
     # News
     if any(w in q for w in ["news", "khabar", "headlines", "samachar"]):
         for topic in ["cricket", "technology", "politics", "business", "sports"]:
@@ -272,6 +348,12 @@ def get_live_answer(query):
 
     if source == "stock":
         return get_stock(value)
+
+    if source == "weather":
+        return get_weather_live(value)
+
+    if source == "sports":
+        return get_sports(value)
 
     if source == "news":
         return get_news(value)
