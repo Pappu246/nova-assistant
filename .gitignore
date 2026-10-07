@@ -29,6 +29,7 @@ gemini_model.txt
 *.log
 identity.json
 nova_memory.db
+nova_crash.log
 *.bak
 *.bak
 rt_speak_*_backup.py

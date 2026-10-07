@@ -127,7 +127,9 @@ def stream_reply(user_text, history=None):
                     w in user_low for w in ("call", "video", "phone")):
                 same_command = True
 
-        if policy.is_yes(user_text) or same_command:
+        # STALE PENDING FIX (NOVA): naya command + 'haan' sath me aaye to
+        # purani pending execute mat karo (is_confirmation command detect karta hai)
+        if policy.is_confirmation(user_text, pending) or same_command:
             policy.clear_pending()
             tool_name = pending["tool"]
             args = pending["args"]
