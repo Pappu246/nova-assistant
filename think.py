@@ -72,6 +72,7 @@ TOOL_SPECS = {
     # ---- Comms (Phase 5) ----
     "send_email": "Send email via Gmail SMTP. Args: {to: str (email or saved contact name), subject: str, body: str}. USE FOR 'email bhejo', 'mail karo'. Needs confirmation.",
     "whatsapp_send": "Send WhatsApp message to contact/number. Args: {contact: str, message: str}. USE FOR 'X ko whatsapp karo', 'message bhejo'.",
+    "whatsapp_call_end": "End the current WhatsApp call. Args: {}. Use for call kaato, kaat do, cut karo, call cut. No confirmation.",
     "whatsapp_call": "Start a WhatsApp VOICE or VIDEO call with a contact (opens the chat, then clicks the call button). Args: {contact: str, video: bool}. USE FOR 'X ko call karo', 'X ko video call karo', 'whatsapp pe call lagao'. video=true ONLY for video call. Needs confirmation.",
     "whatsapp_reply": "Reply in last open WhatsApp chat. Args: {message: str}",
     "calendar_add": "Add calendar event. Args: {title: str, when: str (e.g. 'kal 6 baje', '25 dec 10 baje')}",
@@ -252,6 +253,7 @@ User: "whatsapp kholke screenshot bhejo" -> {{"mode": "agent", "goal": "Open Wha
 User: "portfolio website banao"  -> {{"mode": "agent", "goal": "Create a portfolio website with dark theme, about section, projects, contact"}}
 User: "youtube pe python dhundo aur pehla video chalao" -> {{"mode": "agent", "goal": "Open YouTube, search python, play first video"}}
 User: "5 minute baad chai yaad dilana" -> {{"mode": "tool", "tool": "set_reminder", "args": {{"text": "chai", "when": "5 minute baad"}}}}
+User: "call kaato" -> {{"mode": "tool", "tool": "whatsapp_call_end", "args": {{}}}}
 User: "Pinkesh ko call karo"     -> {{"mode": "tool", "tool": "whatsapp_call", "args": {{"contact": "Pinkesh"}}}}
 User: "Pinkesh ko video call karo" -> {{"mode": "tool", "tool": "whatsapp_call", "args": {{"contact": "Pinkesh", "video": true}}}}
 User: "Pinkesh ko message karo hello" -> {{"mode": "tool", "tool": "whatsapp_send", "args": {{"contact": "Pinkesh", "message": "hello"}}}}

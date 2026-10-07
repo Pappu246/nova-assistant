@@ -45,3 +45,6 @@ contacts.json
 calendar.json
 mood_history.json
 nova_backup_*/
+
+# Local diagnostic patches
+*.patch

@@ -31,6 +31,7 @@ SAFE_TOOLS = {
     "live_data", "live_news", "live_crypto", "live_stock", "live_weather",
     # Comms - WhatsApp message bhejना SAFE hai (user ne khud bola hota hai)
     "whatsapp_send", "whatsapp_reply",
+    "whatsapp_call_end",  # SAFE: spoken confirmation would leak into the call
     "calendar_add", "calendar_list", "calendar_delete", "save_contact",
     # Semantic memory + mood
     "semantic_remember", "semantic_recall",
@@ -188,6 +189,7 @@ def _clean_yesno_text(text):
 # "priyanshu ko call karo. haan." ek NAYA command hai - usme purani pending
 # execute nahi honi chahiye. Isliye command wale patterns alag pehchano.
 _CMD_PATTERNS = (
+    "call kaato", "call kaat do", "kaato", "kaat do", "cut karo", "call cut",
     "call karo", "call lagao", "call kar do", "video call", "voice call",
     "phone karo", "kholo", "khol do", "open karo", "chala do",
     "message karo", "message bhejo", "bhejo", "send karo",

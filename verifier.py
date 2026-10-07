@@ -53,6 +53,7 @@ _SUCCESS_HINTS = {
     # Comms (Phase 5)
     "send_email": ["bhej", "email", "mail"],
     "whatsapp_send": ["whatsapp", "bhej", "ready", "khola", "search"],
+    "whatsapp_call_end": ["whatsapp call kaat di"],
     "whatsapp_call": ["whatsapp", "call", "laga", "dial", "ringing", "khola"],
     "whatsapp_reply": ["whatsapp", "reply", "bhej"],
     "calendar_add": ["add", "calendar", "event"],
