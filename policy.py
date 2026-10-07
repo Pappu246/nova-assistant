@@ -3,6 +3,7 @@ NOVA Policy - sirf DANGEROUS actions pe confirmation.
 Baaki sab auto-execute.
 """
 import re
+import time
 import threading
 
 SAFE = "safe"
@@ -67,6 +68,12 @@ BLOCK_PATTERNS = [
 
 _pending = {}
 _lock = threading.Lock()
+
+# STALE PENDING FIX (NOVA): purani confirmation zinda reh jati thi -
+# NOVA "whatsapp kholna hai?" poochta, Boss "priyanshu ko call karo. haan."
+# bolta, aur 'haan' match hoke PURANA open_app chal jata tha (call gayab).
+# Ab pending 3 min me expire ho jati hai.
+PENDING_TTL_SEC = 180
 
 
 def classify(tool_name, args=None):
@@ -145,11 +152,24 @@ def set_pending(tool_name, args):
     with _lock:
         _pending["tool"] = tool_name
         _pending["args"] = args
+        _pending["ts"] = time.time()
 
 
 def get_pending():
+    """Pending confirmation - PENDING_TTL_SEC se purani ho to expire + clear."""
     with _lock:
-        return dict(_pending) if _pending else None
+        if not _pending:
+            return None
+        ts = _pending.get("ts")
+        if ts is not None:
+            try:
+                age = time.time() - float(ts)
+            except Exception:
+                age = 0.0
+            if age > PENDING_TTL_SEC:
+                _pending.clear()
+                return None
+        return dict(_pending)
 
 
 def clear_pending():
@@ -162,6 +182,41 @@ def _clean_yesno_text(text):
     text = (text or "").lower().strip()
     text = re.sub(r"[^\w\s]", " ", text)
     return " ".join(text.split())
+
+
+# STALE PENDING FIX (NOVA): "haan" akela confirmation hai, par
+# "priyanshu ko call karo. haan." ek NAYA command hai - usme purani pending
+# execute nahi honi chahiye. Isliye command wale patterns alag pehchano.
+_CMD_PATTERNS = (
+    "call karo", "call lagao", "call kar do", "video call", "voice call",
+    "phone karo", "kholo", "khol do", "open karo", "chala do",
+    "message karo", "message bhejo", "bhejo", "send karo",
+    "bajao", "chalao", "play karo",
+    "search karo", "google karo", "dikhao", "banao",
+    "band karo", "close karo", "type karo",
+    "lagao", "laga do",
+    "remind karo", "yaad dila",
+)
+
+
+def looks_like_command(text):
+    """Text me koi action pattern hai? (cleaned/lowercase text pe match)"""
+    t = _clean_yesno_text(text)
+    if not t:
+        return False
+    return any(p in t for p in _CMD_PATTERNS)
+
+
+def is_confirmation(text, pending=None):
+    """Sirf 'haan' jaisa confirmation? Naya command sath me ho to NAHI.
+
+    pending optional hai (API symmetry ke liye) - decision text se hi hota hai.
+    """
+    if not is_yes(text):
+        return False
+    if looks_like_command(text):
+        return False
+    return True
 
 
 def is_yes(text):

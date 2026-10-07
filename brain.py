@@ -37,7 +37,10 @@ def ask_nova(user_message, history=None):
                     w in user_low for w in ("call", "video", "phone")):
                 same_command = True
 
-        if policy.is_yes(user_message) or same_command:
+        # STALE PENDING FIX (NOVA): "X ko call karo. haan." me 'haan' match
+        # hoke PURANA pending chal jata tha. is_confirmation naya command
+        # detect karta hai - tab pending execute NAHI hoti.
+        if policy.is_confirmation(user_message, pending) or same_command:
             policy.clear_pending()
             tool_name = pending["tool"]
             args = pending["args"]

@@ -340,6 +340,126 @@ def x_existing_tests():
     return tail
 
 
+# ============ CALL FIX (NOVA): strict UIA + VERIFY + honest fail ============
+def x_call_strict_verify():
+    """Fuzzy match hata: exact-name weights, call-log block, verify hints."""
+    import comms_agent as c
+    for fn in ("_wa_uia_call_candidates", "_wa_uia_click", "_wa_click_call_button_ui",
+               "_wa_click_call_button_vision", "_wa_call_fallback_xy",
+               "_wa_call_state_note", "_wa_call_already_active", "_wa_call_probe"):
+        assert hasattr(c, fn), fn + " missing"
+    wv = c._WA_CALL_UI_NAME_WEIGHTS[False]
+    assert wv["voice call"] == 3 and wv["call"] == 1, str(wv)
+    assert c._WA_CALL_UI_NAME_WEIGHTS[True]["video call"] == 3
+    for bad in ("missed", "no answer", "call back"):
+        assert bad in c._WA_CALL_BAD_NAME_WORDS, bad
+    # 'call ended' / 'no answer' verify hints NAHI (chat call-log false positive)
+    for bad in ("call ended", "no answer"):
+        assert bad not in c._WA_CALL_SCREEN_HINTS, bad + " hint me nahi hona chahiye"
+    for good in ("calling", "ringing", "end call", "end video call"):
+        assert good in c._WA_CALL_SCREEN_HINTS, good
+    assert "NOT text inside chat messages" in c._WA_CALL_VISION_TARGETS[False]
+    assert "NOT text inside chat messages" in c._WA_CALL_VISION_TARGETS[True]
+    return "strict weights + bad words + verify hints ok"
+
+
+def x_call_honest_fail():
+    """Bina call-screen verify kiye success NAHI bolna chahiye."""
+    import comms_agent as c
+    import verifier
+    orig = (c._wa_open_chat_and_run, c._wa_focus_call_window, c._wa_click_call_button_ui,
+            c._wa_click_call_button_vision, c._wa_call_fallback_xy,
+            c._wa_call_already_active, c._wa_call_state_note)
+    try:
+        c._wa_open_chat_and_run = lambda name, after_open=None, wait_load=12: after_open(None, None, "test")
+        c._wa_focus_call_window = lambda: ""
+        c._wa_call_already_active = lambda video=False: False
+        c._wa_click_call_button_ui = lambda video=False: "uia invoke 'Voice call'"
+        c._wa_click_call_button_vision = lambda video=False: None
+        c._wa_call_fallback_xy = lambda video=False: None
+        # 1) click hua par calling screen nahi aayi -> honest fail
+        c._wa_call_state_note = lambda video=False, wait=None: ("absent", "no call-screen text")
+        r = str(c.whatsapp_call({"contact": "QA Test"}))
+        assert "laga diya" not in r, "jhoothi success bol diya: " + r
+        assert "fail" in r.lower() and "calling screen nahi aayi" in r, r
+        ok, _ = verifier.verify({"tool": "whatsapp_call"}, r)
+        assert not ok, "verifier failure nahi pehchana"
+        # 2) OCR hi unavailable -> alag honest message
+        c._wa_call_state_note = lambda video=False, wait=None: ("unknown", "ocr unavailable")
+        r2 = str(c.whatsapp_call({"contact": "QA Test"}))
+        assert "confirm nahi kar paya" in r2 and "laga diya" not in r2, r2
+        # 3) verify OK -> success, spoken reply me parentheses nahi
+        c._wa_call_state_note = lambda video=False, wait=None: ("detected", "calling")
+        r3 = str(c.whatsapp_call({"contact": "QA Test"}))
+        assert "laga diya" in r3 and "(" not in r3 and ")" not in r3, r3
+    finally:
+        (c._wa_open_chat_and_run, c._wa_focus_call_window, c._wa_click_call_button_ui,
+         c._wa_click_call_button_vision, c._wa_call_fallback_xy,
+         c._wa_call_already_active, c._wa_call_state_note) = orig
+    return "verify-gated success + honest fail ok"
+
+
+def x_confirmation_guard():
+    """'X ko call karo. haan.' se purana pending NAHI chalna chahiye + TTL."""
+    import policy
+    assert policy.PENDING_TTL_SEC == 180, policy.PENDING_TTL_SEC
+    assert policy.looks_like_command("call karo") and policy.looks_like_command("kholo")
+    assert policy.looks_like_command("haan") is False
+    assert policy.is_yes("priyanshu ko call karo. haan.") is True
+    assert policy.is_confirmation("priyanshu ko call karo. haan.") is False
+    assert policy.is_confirmation("haan") is True
+    policy.clear_pending()
+    policy.set_pending("open_app", {"app_name": "whatsapp"})
+    assert policy.get_pending() is not None
+    assert "ts" in policy.get_pending()
+    policy._pending["ts"] = time.time() - (policy.PENDING_TTL_SEC + 10)
+    assert policy.get_pending() is None, "stale pending expire nahi hui"
+    policy.clear_pending()
+    import brain, rt_brain, os as _os
+    for mod in (brain, rt_brain):
+        src = open(_os.path.join(_os.path.dirname(_os.path.abspath(mod.__file__)),
+                                 mod.__name__ + ".py"), encoding="utf-8").read()
+        assert "policy.is_confirmation(" in src, mod.__name__ + " me is_confirmation missing"
+    return "naya command guard + 180s TTL ok"
+
+
+def x_crash_resilience():
+    """Crash se NOVA band na ho: _log_crash + continuous_mode try/except."""
+    import main, os, tempfile
+    assert hasattr(main, "_log_crash"), "_log_crash missing"
+    d = tempfile.mkdtemp(prefix="nova_qa_")
+    p = os.path.join(d, "nova_crash.log")
+    old = main.CRASH_LOG
+    try:
+        main.CRASH_LOG = p
+        # Jaan-boojh ke crash - traceback log me jana chahiye, QA output me nahi
+        _so, sys.stdout = sys.stdout, open(os.devnull, "w", encoding="utf-8")
+        try:
+            try:
+                raise ValueError("qa crash")
+            except ValueError:
+                main._log_crash("qa_report")
+        finally:
+            sys.stdout.close()
+            sys.stdout = _so
+        txt = open(p, encoding="utf-8").read()
+        assert "qa_report" in txt and "ValueError: qa crash" in txt, txt[:80]
+    finally:
+        main.CRASH_LOG = old
+        try:
+            os.remove(p)
+            os.rmdir(d)
+        except Exception:
+            pass
+    src = open(os.path.join(os.path.dirname(os.path.abspath(main.__file__)), "main.py"),
+               encoding="utf-8").read()
+    body = src[src.index("def continuous_mode()"):src.index("def text_mode()")]
+    assert '_log_crash("continuous mode")' in body, "continuous_mode crash wrap missing"
+    assert "except KeyboardInterrupt:" in body, "Ctrl+C handler missing"
+    return "crash log + loop wrap ok"
+
+
+
 # ================= RUNNER =================
 def main():
     print("=" * 62)
@@ -377,6 +497,10 @@ def main():
         ("Wiring", "think prompt wiring", x_think_wiring, False),
         ("Wiring", "413 caps enforced", x_fit_memory_cap, False),
         ("Wiring", "verifier hints", x_verifier_planner, False),
+        ("Call Fix", "strict UIA + verify hints", x_call_strict_verify, False),
+        ("Call Fix", "honest fail (no false success)", x_call_honest_fail, False),
+        ("Call Fix", "stale pending + 180s TTL", x_confirmation_guard, False),
+        ("Call Fix", "crash resilience", x_crash_resilience, False),
         ("Wiring", "pytest suite", x_existing_tests, True),
     ]
     for phase, name, fn, warn in plan:

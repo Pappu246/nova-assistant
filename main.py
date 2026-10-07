@@ -1,6 +1,7 @@
 """
 NOVA - Voice assistant (continuous mode only, no wake word).
 """
+import os
 import sys
 import re
 import agent_state
@@ -96,6 +97,27 @@ def proactive_greeting():
     return f"{greet} Main NOVA hoon. {follow}"
 
 
+# ============ CRASH RESILIENCE (NOVA) ============
+# Ek tool/HUD/speech exception se poora NOVA band ho jata tha. Ab crash log
+# hota hai aur loop chalta rehta hai.
+
+CRASH_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nova_crash.log")
+
+
+def _log_crash(where):
+    """Traceback print + nova_crash.log (gitignored) me append karo."""
+    import traceback
+    tb = traceback.format_exc()
+    print("[nova] CRASH in " + str(where) + ":\n" + tb)
+    try:
+        import datetime
+        with open(CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write("\n===== %s | %s =====\n%s\n" % (
+                datetime.datetime.now().isoformat(timespec="seconds"), where, tb))
+    except Exception as e:
+        print("[nova] crash log likh nahi paya: " + str(e)[:60])
+
+
 # ============ TEXT INPUT READER ============
 
 _typed_queue = []
@@ -172,73 +194,81 @@ def continuous_mode():
     standby = False
 
     while True:
-        typed = _get_typed()
-        if typed:
-            text = typed
-            print(f"[typed] {text}")
-            matched = True
-        else:
-            text, matched = listen_continuous(chunk_sec=3.0)
+        # CRASH FIX (NOVA): ek turn ka exception poora NOVA band na kare
+        try:
+            typed = _get_typed()
+            if typed:
+                text = typed
+                print(f"[typed] {text}")
+                matched = True
+            else:
+                text, matched = listen_continuous(chunk_sec=3.0)
 
-        if not text:
-            continue
+            if not text:
+                continue
 
-        print(f"Tum: {text}")
-        if _HUD:
-            hud.update("user", text)
-            hud.update("status", "Soch raha hoon...")
+            print(f"Tum: {text}")
+            if _HUD:
+                hud.update("user", text)
+                hud.update("status", "Soch raha hoon...")
 
-        low = text.lower().strip()
-        low_clean = re.sub(r"[^a-z ]", "", low)
-        low_clean = re.sub(r"\s+", " ", low_clean).strip()
+            low = text.lower().strip()
+            low_clean = re.sub(r"[^a-z ]", "", low)
+            low_clean = re.sub(r"\s+", " ", low_clean).strip()
 
-        # ---- STANDBY MODE ----
-        sleep_keywords = ["so jao", "soja", "soo jao", "su jao", "sujao",
-                          "gojao", "so jaa", "sleep", "band ho ja",
-                          "chup ho ja", "shant ho ja", "good night"]
-        is_sleep = any(w in low_clean for w in sleep_keywords)
+            # ---- STANDBY MODE ----
+            sleep_keywords = ["so jao", "soja", "soo jao", "su jao", "sujao",
+                              "gojao", "so jaa", "sleep", "band ho ja",
+                              "chup ho ja", "shant ho ja", "good night"]
+            is_sleep = any(w in low_clean for w in sleep_keywords)
 
-        if is_sleep:
-            print("[continuous] Standby mode. Bolne pe wapas active hoga.")
-            speak_with_interrupt("Theek hai Boss, standby pe ja raha hoon. Jab bologe wapas active ho jaunga.")
-            standby = True
-            continue
+            if is_sleep:
+                print("[continuous] Standby mode. Bolne pe wapas active hoga.")
+                speak_with_interrupt("Theek hai Boss, standby pe ja raha hoon. Jab bologe wapas active ho jaunga.")
+                standby = True
+                continue
 
-        # ---- WAKE FROM STANDBY (any speech resumes) ----
-        if standby:
-            print("[continuous] Wapas active")
-            speak_with_interrupt("Wapas aa gaya!")
-            standby = False
-            continue
+            # ---- WAKE FROM STANDBY (any speech resumes) ----
+            if standby:
+                print("[continuous] Wapas active")
+                speak_with_interrupt("Wapas aa gaya!")
+                standby = False
+                continue
 
-        # ---- BYE ----
-        if any(w in low for w in ["bye", "goodbye", "shutdown"]):
-            speak_with_interrupt("Theek hai Boss, milte hain!")
+            # ---- BYE ----
+            if any(w in low for w in ["bye", "goodbye", "shutdown"]):
+                speak_with_interrupt("Theek hai Boss, milte hain!")
+                break
+
+            # ---- STOP ----
+            if any(w in low for w in ["stop", "ruko", "chup", "bas"]):
+                continue
+
+            # ---- PROCESS ----
+            state.set_mode("thinking")
+            reply = ask_nova(text, history)
+            state.record_tool_result(reply)
+            state.add_to_context("assistant", reply)
+
+            state.set_mode("speaking")
+            if _HUD:
+                hud.update("nova", reply)
+                hud.update("status", "Bol raha hoon...")
+            speak_with_interrupt(reply)
+            state.set_mode("idle")
+            if _HUD:
+                hud.update("status", "Ready")
+
+            history.append({"role": "user", "content": text})
+            history.append({"role": "assistant", "content": reply})
+            if len(history) > 20:
+                history = history[-20:]
+        except KeyboardInterrupt:
+            print("[nova] Ctrl+C - band kar raha hoon")
             break
-
-        # ---- STOP ----
-        if any(w in low for w in ["stop", "ruko", "chup", "bas"]):
+        except Exception:
+            _log_crash("continuous mode")
             continue
-
-        # ---- PROCESS ----
-        state.set_mode("thinking")
-        reply = ask_nova(text, history)
-        state.record_tool_result(reply)
-        state.add_to_context("assistant", reply)
-
-        state.set_mode("speaking")
-        if _HUD:
-            hud.update("nova", reply)
-            hud.update("status", "Bol raha hoon...")
-        speak_with_interrupt(reply)
-        state.set_mode("idle")
-        if _HUD:
-            hud.update("status", "Ready")
-
-        history.append({"role": "user", "content": text})
-        history.append({"role": "assistant", "content": reply})
-        if len(history) > 20:
-            history = history[-20:]
 
 
 def text_mode():
