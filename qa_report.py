@@ -205,6 +205,32 @@ def p5_whatsapp():
     return str(r)[:70]
 
 
+def p5_whatsapp_call():
+    import comms_agent as c
+    assert hasattr(c, "whatsapp_call"), "whatsapp_call missing"
+    assert hasattr(c, "_wa_click_call_button_ui") and hasattr(c, "_wa_click_call_button_vision")
+    assert c._wa_call_wants_video({"video": True}) is True
+    assert c._wa_call_wants_video({"video": "video"}) is True
+    assert c._wa_call_wants_video({}) is False
+    r = c.whatsapp_call({"contact": "no_such_qa_contact_xyz", "video": True})
+    assert "call" in str(r).lower() and "fail" in str(r).lower(), str(r)[:90]
+    return str(r)[:70]
+
+
+def x_call_wiring():
+    import policy, planner, think, verifier
+    assert policy.classify("whatsapp_call") == "ask", "call ASK hona chahiye"
+    msg = policy.make_confirmation_message("whatsapp_call", {"contact": "QA", "video": True})
+    assert "QA" in msg and "video call" in msg.lower(), msg
+    assert "whatsapp_call" in planner.TOOL_SCHEMAS, "planner schema missing"
+    assert "whatsapp_call" in think.TOOL_SPECS, "think spec missing"
+    assert "whatsapp_call" in think.SYSTEM_PROMPT_TEMPLATE, "think prompt example missing"
+    assert "whatsapp_call" in verifier._SUCCESS_HINTS, "verifier hints missing"
+    import rt_brain
+    assert "whatsapp_call" in rt_brain.CONVERSATIONAL_VOICE_SYSTEM_PROMPT, "voice prompt rule missing"
+    return "ask + planner + think + verifier + rt_brain ok"
+
+
 # ================= PHASE 6: EMOTION =================
 def p6_detect():
     import emotion
@@ -253,9 +279,10 @@ def x_policy_comms():
     import policy
     assert policy.classify("whatsapp_send") == "safe"
     assert policy.classify("whatsapp_reply") == "safe"
+    assert policy.classify("whatsapp_call") == "ask"
     assert policy.classify("send_email") == "ask"
     assert policy.classify("shutdown_pc") == "ask"
-    return "whatsapp=safe, email/shutdown=ask"
+    return "whatsapp=safe, call/email/shutdown=ask"
 
 
 def x_yes_punct():
@@ -293,8 +320,12 @@ def x_fit_memory_cap():
 
 def x_verifier_planner():
     import verifier
-    for t in ["semantic_recall", "calendar_add", "send_email", "mood_history"]:
+    for t in ["semantic_recall", "calendar_add", "send_email", "mood_history", "whatsapp_call"]:
         assert t in verifier._SUCCESS_HINTS, f"{t} missing in verifier hints"
+    ok, _ = verifier.verify({"tool": "whatsapp_call"}, "voice call laga diya")
+    assert ok, "verifier call success nahi pehchana"
+    bad, _ = verifier.verify({"tool": "whatsapp_call"}, "call nahi laga paya - fail")
+    assert not bad, "verifier call failure nahi pehchana"
     return "verifier hints ok"
 
 
@@ -334,10 +365,12 @@ def main():
         ("P5 Comms", "contacts save/resolve", p5_contacts, False),
         ("P5 Comms", "email setup guard", p5_email_setup, False),
         ("P5 Comms", "whatsapp by-name path", p5_whatsapp, False),
+        ("P5 Comms", "whatsapp_call flow", p5_whatsapp_call, False),
         ("P6 Emotion", "detect Hinglish emotions", p6_detect, False),
         ("P6 Emotion", "voice params + ack", p6_voice_ack, False),
         ("P6 Emotion", "mood history tool wired", p6_tool, False),
         ("Wiring", "all tools classified", x_all_tools_classified, False),
+        ("Wiring", "whatsapp_call wiring", x_call_wiring, False),
         ("Wiring", "policy: whatsapp safe/email ask", x_policy_comms, False),
         ("Wiring", "is_yes punctuation", x_yes_punct, False),
         ("Wiring", "pending refusal flow", x_pending_flow, False),

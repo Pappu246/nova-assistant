@@ -313,6 +313,17 @@ Voice registration is handled by `voice_id.py`, which stores the local reference
 - persistent facts
 - notes
 
+### Communication
+
+- email sending through a Gmail app password
+- WhatsApp messages to a saved contact or by in-app chat search
+- WhatsApp voice and video calls through the `whatsapp_call` tool
+  (opens the chat with `search -> contact name -> enter`, then clicks the
+  call button - pywinauto first, vision click as fallback)
+
+Calls are confirmation-gated: NOVA asks before dialing, and agent mode never
+auto-dials a call.
+
 ## Installation
 
 NOVA is primarily intended for Windows 10 and Windows 11.
@@ -398,6 +409,9 @@ chrome kholo
 screenshot lo
 volume badhao
 youtube pe Kesariya bajao
+whatsapp pe Pinkesh ko message karo hello
+Pinkesh ko call karo
+Pinkesh ko video call karo
 google pe weather Delhi search karo
 5 minute baad yaad dilana chai peena
 mera naam Pappu hai

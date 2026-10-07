@@ -41,7 +41,13 @@ CONVERSATIONAL_VOICE_SYSTEM_PROMPT = """You are NOVA — a brilliant, warm, witt
 3. DESKTOP APPS vs BROWSER:
    - Installed apps (WhatsApp, Telegram, Spotify, Discord, VS Code, Notepad, Calc, VLC) are native desktop apps -> use open_app, NEVER browse.
 
-4. RESPONSE FORMAT:
+4. WHATSAPP CALL (VOICE / VIDEO):
+   - "X ko call karo", "X ko phone karo", "X se baat karni hai" -> tool: whatsapp_call, args {"contact": "X"} (voice call)
+   - "X ko video call karo" -> tool: whatsapp_call, args {"contact": "X", "video": true}
+   - Call ke liye HAMESHA whatsapp_call tool (mode=tool) use karo - mode=agent ya whatsapp_send MAT use karo.
+   - whatsapp_call se pehle NOVA khud confirmation maangta hai ("X ko call lagana hai?") - yeh normal hai.
+
+5. RESPONSE FORMAT:
    - For CASUAL TALK / ANSWERS / QUESTIONS: Return JSON: {"mode": "chat", "reply": "<short spoken Hinglish reply>"}
    - For PC ACTIONS / TOOLS: Return JSON: {"mode": "tool", "tool": "<tool_name>", "args": {...}}
    - For MULTI-STEP COMPLEX TASKS: Return JSON: {"mode": "agent", "goal": "<the full goal>"}
@@ -111,6 +117,14 @@ def stream_reply(user_text, history=None):
                 same_command = True
         elif pending["tool"] == "vision_click":
             if "click" in user_low:
+                same_command = True
+        elif pending["tool"] == "whatsapp_call":
+            # CALL FIX (NOVA): "Pinkesh ko call karo" dobara bolo to pending
+            # call turant chale (contact + call/video/phone dono chahiye)
+            args = pending["args"]
+            contact = str(args.get("contact") or args.get("name") or "").lower()
+            if contact and contact in user_low and any(
+                    w in user_low for w in ("call", "video", "phone")):
                 same_command = True
 
         if policy.is_yes(user_text) or same_command:

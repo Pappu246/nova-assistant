@@ -72,6 +72,7 @@ TOOL_SPECS = {
     # ---- Comms (Phase 5) ----
     "send_email": "Send email via Gmail SMTP. Args: {to: str (email or saved contact name), subject: str, body: str}. USE FOR 'email bhejo', 'mail karo'. Needs confirmation.",
     "whatsapp_send": "Send WhatsApp message to contact/number. Args: {contact: str, message: str}. USE FOR 'X ko whatsapp karo', 'message bhejo'.",
+    "whatsapp_call": "Start a WhatsApp VOICE or VIDEO call with a contact (opens the chat, then clicks the call button). Args: {contact: str, video: bool}. USE FOR 'X ko call karo', 'X ko video call karo', 'whatsapp pe call lagao'. video=true ONLY for video call. Needs confirmation.",
     "whatsapp_reply": "Reply in last open WhatsApp chat. Args: {message: str}",
     "calendar_add": "Add calendar event. Args: {title: str, when: str (e.g. 'kal 6 baje', '25 dec 10 baje')}",
     "calendar_list": "List calendar events. Args: {when: str (today/tomorrow/all)}",
@@ -251,12 +252,16 @@ User: "whatsapp kholke screenshot bhejo" -> {{"mode": "agent", "goal": "Open Wha
 User: "portfolio website banao"  -> {{"mode": "agent", "goal": "Create a portfolio website with dark theme, about section, projects, contact"}}
 User: "youtube pe python dhundo aur pehla video chalao" -> {{"mode": "agent", "goal": "Open YouTube, search python, play first video"}}
 User: "5 minute baad chai yaad dilana" -> {{"mode": "tool", "tool": "set_reminder", "args": {{"text": "chai", "when": "5 minute baad"}}}}
+User: "Pinkesh ko call karo"     -> {{"mode": "tool", "tool": "whatsapp_call", "args": {{"contact": "Pinkesh"}}}}
+User: "Pinkesh ko video call karo" -> {{"mode": "tool", "tool": "whatsapp_call", "args": {{"contact": "Pinkesh", "video": true}}}}
+User: "Pinkesh ko message karo hello" -> {{"mode": "tool", "tool": "whatsapp_send", "args": {{"contact": "Pinkesh", "message": "hello"}}}}
 User: "java kya hai"             -> {{"mode": "chat", "reply": "Java ek programming language hai jo 1995 mein aayi. Android apps aur enterprise software mein use hoti hai."}}
 User: "save karo"                -> {{"mode": "tool", "tool": "smart_action", "args": {{"intent": "save"}}}}
 
 CRITICAL RULES FOR OUTPUT:
 - Desktop apps (WhatsApp, Telegram, Spotify, Discord, Notepad, Calc, VLC, etc.) PC par installed hain -> HAMESHA open_app use karo, browse tool se KABHI open mat karo.
 - browse tool SIRF internet browsing aur website automation (e.g. Amazon, Wikipedia) ke liye hai.
+- WhatsApp CALL ('X ko call karo', 'video call karo') ke liye HAMESHA mode=tool + whatsapp_call use karo - mode=agent MAT use karo (agent mode confirmation skip kar deta hai aur galti se call lag sakti hai).
 - Reply MUST be valid JSON only. No markdown, no extra text.
 - Use ONLY tool names from the list above.
 - If unsure between chat and tool - prefer chat first, don't force tool calls.
