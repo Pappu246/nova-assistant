@@ -858,6 +858,7 @@ TOOLS = {
     # ---- Comms (Phase 5) - late-bound from comms_agent ----
     "send_email": _lazy_tool("comms_agent", "send_email", "send_email"),
     "whatsapp_send": _lazy_tool("comms_agent", "whatsapp_send", "whatsapp_send"),
+    "whatsapp_call": _lazy_tool("comms_agent", "whatsapp_call", "whatsapp_call"),
     "whatsapp_reply": _lazy_tool("comms_agent", "whatsapp_reply", "whatsapp_reply"),
     "calendar_add": _lazy_tool("comms_agent", "calendar_add", "calendar_add"),
     "calendar_list": _lazy_tool("comms_agent", "calendar_list", "calendar_list"),

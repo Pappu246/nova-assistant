@@ -73,6 +73,10 @@ TOOL_SCHEMAS = {
     "live_news": {"topic": "str", "limit": "int"},
     "live_crypto": {"coin": "str"},
     "live_stock": {"symbol": "str"},
+    # Comms calls (WhatsApp voice/video)
+    "whatsapp_call": {"contact": "str", "video": "bool (true = video call, false/omit = voice call)"},
+    "whatsapp_send": {"contact": "str", "message": "str"},
+    "whatsapp_reply": {"message": "str"},
 }
 
 
@@ -143,6 +147,16 @@ CRITICAL - WhatsApp / MESSAGING FLOW (SEND STEP KABHI MAT BHOOLNA):
   press_key {"key": "enter"} hona chahiye, warna message type hoke reh jayega, SEND nahi hoga.
 - Note: enter DO baar alag-alag jagah aa sakta hai (contact select + message send) - dono valid steps hain.
 
+CRITICAL - WHATSAPP CALL FLOW (CALL ka plan - message flow se ALAG):
+- "X ko call karo" / "X ko phone karo" / "X se baat karni hai" / "X ko video call karo" ka plan:
+  Step 1: whatsapp_call {"contact": "X", "video": false}   (VOICE call)
+  ya:     whatsapp_call {"contact": "X", "video": true}    (VIDEO call jab user video bole)
+- whatsapp_call khud WhatsApp kholta hai, naam se chat search karta hai aur
+  upar-right wala call button dabata hai - isliye is plan me ALAG se
+  open_app / vision_click / type_text / press_key jaise steps MAT banao.
+- Call me koi message/send step NAHI hota - call button click hi final step hai.
+  Isliye call goals me press_key {"key": "enter"} add MAT karo.
+
 Return SIRF JSON array, aur kuch nahi:
 [
   {"step": 1, "tool": "...", "args": {...}, "description": "..."},
@@ -192,6 +206,11 @@ def _extract_json_array(text):
 
 # ---- SEND FIX (NOVA): WhatsApp/message goals me final send-step ensure karo ----
 _MSG_GOAL_HINTS = ("message", "msg", "bhej", "send", "whatsapp", "likh")
+# ---- CALL FIX (NOVA): call goals me send-step append NAHI karna ----
+# ("Pinkesh ko whatsapp call karo" me 'whatsapp' hai par ye messaging nahi hai)
+_CALL_GOAL_HINTS = ("call karo", "call lagao", "call kar do", "call laga",
+                    "video call", "voice call", "phone karo", "phone lagao",
+                    "call karna", "call kar")
 _TYPE_TOOLS = {"type_text", "type_in_field", "ui_type_in_field", "ui_set_text", "set_text"}
 
 
@@ -202,15 +221,28 @@ def _is_enter_step(step):
     return "enter" in key or "return" in key
 
 
+def _is_call_goal(goal):
+    """Goal WhatsApp call/message me se kya hai? Call goal me send-step
+    (press_key enter) append nahi hota - call button click hi final hai."""
+    g = (goal or "").lower()
+    if not any(h in g for h in _CALL_GOAL_HINTS):
+        return False
+    # Mixed goal (call + message) me message flow important hai
+    return not any(h in g for h in ("message", "msg bhej", "bhejo"))
+
+
 def _ensure_send_step(goal, steps):
     """
     SEND FIX (NOVA): 'X ko message karo Y' jaise goals me LLM aksar message
     TYPE karwa deta hai par SEND (press_key enter) bhool jata hai.
     Agar aakhri typing step ke baad koi enter/send step nahi hai,
     to final press_key enter step append karo.
+    CALL FIX (NOVA): call goals me koi send/enter step nahi hota.
     """
     g = (goal or "").lower()
-    if not steps or not any(h in g for h in _MSG_GOAL_HINTS):
+    if not steps or _is_call_goal(g):
+        return steps
+    if not any(h in g for h in _MSG_GOAL_HINTS):
         return steps
 
     last_type_idx = None

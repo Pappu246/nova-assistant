@@ -57,6 +57,7 @@ ASK_TOOLS = {
     "open_app",
     "type_text",
     "send_email",   # email bhejne se pehle confirm karo
+    "whatsapp_call",  # CALL FIX (NOVA): galti se call na lage - pehle confirm
 }
 
 # ---- BLOCK patterns (hard block) ----
@@ -105,6 +106,21 @@ def make_confirmation_message(tool_name, args):
         except Exception:
             app = str(args)
         return (app + " kholna hai?" if app else "App kholna hai?")
+    if tool_name == "whatsapp_call":
+        # CALL FIX (NOVA): call ka apna friendly confirm message
+        contact, video = "", False
+        try:
+            a = args if isinstance(args, dict) else {}
+            contact = str(a.get("contact") or a.get("name") or a.get("to") or "").strip()
+            v = a.get("video", a.get("video_call", False))
+            video = v if isinstance(v, bool) else str(v).strip().lower() in (
+                "1", "true", "yes", "haan", "ha", "video")
+        except Exception:
+            pass
+        kind = "video call" if video else "voice call"
+        if contact:
+            return f"{contact} ko WhatsApp {kind} lagana hai?"
+        return f"WhatsApp {kind} lagana hai?"
     if tool_name == "type_text":
         txt = ""
         try:

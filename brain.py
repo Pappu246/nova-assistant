@@ -29,6 +29,13 @@ def ask_nova(user_message, history=None):
         elif pending["tool"] == "vision_click":
             if "click" in user_low:
                 same_command = True
+        elif pending["tool"] == "whatsapp_call":
+            # CALL FIX (NOVA): same call command dobara bolo to pending call chale
+            args = pending["args"]
+            contact = str(args.get("contact") or args.get("name") or "").lower()
+            if contact and contact in user_low and any(
+                    w in user_low for w in ("call", "video", "phone")):
+                same_command = True
 
         if policy.is_yes(user_message) or same_command:
             policy.clear_pending()

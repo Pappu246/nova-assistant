@@ -91,6 +91,28 @@ def _deduplicate_plan(plan, completed_keys=None):
     return out
 
 
+# ---- CALL SAFEGUARD (NOVA): ASK-tools jo agent mode me auto-approve NAHI honge ----
+# whatsapp_call se galti se call na lag jaye: agent mode me koi interactive
+# confirmation channel nahi hai, isliye call plan ko yahin rok dete hain aur
+# user se seedha confirm karwate hain (brain/rt_brain ka pending flow).
+_CONFIRM_ONLY_TOOLS = {"whatsapp_call"}
+
+
+def _call_guard_message(step):
+    """Call step ke liye friendly, actionable message."""
+    args = step.get("args", {}) or {}
+    contact = str(args.get("contact") or args.get("name") or args.get("to") or "").strip()
+    v = args.get("video", args.get("video_call", False))
+    video = v if isinstance(v, bool) else str(v).strip().lower() in (
+        "1", "true", "yes", "haan", "ha", "video")
+    kind = "video call" if video else "call"
+    who = (contact + " ko ") if contact else ""
+    return ("Boss, " + who + "WhatsApp " + kind + " lagane se pehle confirmation chahiye - "
+            "agent mode me main auto-call nahi lagata. "
+            "Seedha bolo: '" + (contact or "contact") + " ko " + kind + " karo', "
+            "main tab poochunga, phir 'haan' bolo.")
+
+
 # ---- FOCUS FIX (NOVA): vision click se pehle target app window focus karo ----
 # Warna active-window / fullscreen fallback TERMINAL ya galat window pe
 # click kar deta hai.
@@ -245,6 +267,16 @@ def run_task(goal, on_step=None, force=False):
             state.complete_task("failed")
             result_msg = "Boss, plan ke saare steps skip ho gaye."
             _record_task(goal, result_msg, False)
+            return result_msg
+
+        # CALL SAFEGUARD (NOVA): confirm-only tool (whatsapp_call) agent mode me
+        # auto-approve mat karo - pehle user ko seedha confirm karwao.
+        guard_steps = [s for s in plan if s.get("tool") in _CONFIRM_ONLY_TOOLS]
+        if guard_steps:
+            state.complete_task("blocked")
+            result_msg = _call_guard_message(guard_steps[0])
+            _record_task(goal, result_msg, False)
+            print("[agent] CALL SAFEGUARD: " + guard_steps[0]["tool"] + " auto-approve nahi hua")
             return result_msg
 
         print("[agent] Plan: " + str(len(plan)) + " steps")
