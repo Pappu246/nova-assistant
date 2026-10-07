@@ -74,6 +74,7 @@ TOOL_SCHEMAS = {
     "live_crypto": {"coin": "str"},
     "live_stock": {"symbol": "str"},
     # Comms calls (WhatsApp voice/video)
+    "whatsapp_call_end": {},
     "whatsapp_call": {"contact": "str", "video": "bool (true = video call, false/omit = voice call)"},
     "whatsapp_send": {"contact": "str", "message": "str"},
     "whatsapp_reply": {"message": "str"},

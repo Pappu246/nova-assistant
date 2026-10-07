@@ -762,21 +762,99 @@ def _wa_call_name_weights(video=False):
     return w
 
 
-def _wa_uia_window():
-    """WhatsApp ka pywinauto window object (ui_agent ka lazy loader reuse).
-    Windows/pywinauto na ho to None."""
+_WA_OFFSCREEN_LIMIT = -20000
+_WA_MIN_WINDOW_SIZE = 120
+_WA_OCR_SELF_MARKERS = ("whatsapp_ca", "contact resolved", "esc] stop",
+                        "arena.ai", "git pull", "origin/main", "mingw64",
+                        "python comms_agent", "verify miss", "verify ok")
+
+
+def _wa_win_score(title, rect):
+    score = 100 if str(title).strip().lower() == "whatsapp" else 0
+    if rect:
+        l, t, r, b = rect
+        w, h = max(0, r - l), max(0, b - t)
+        if l > _WA_OFFSCREEN_LIMIT and t > _WA_OFFSCREEN_LIMIT:
+            score += 60
+        if w >= _WA_MIN_WINDOW_SIZE and h >= _WA_MIN_WINDOW_SIZE:
+            score += 30
+        score += min(20, w * h // 150000)
+    return score
+
+
+def _wa_uia_window_candidates(dump=False):
+    out = []
     try:
         import ui_agent
-    except Exception as e:
-        print("[whatsapp_call] ui_agent unavailable: " + str(e)[:60])
-        return None
-    if getattr(ui_agent, "IS_WIN", False) is not True:
-        return None
+        if not ui_agent.IS_WIN:
+            return out
+        if ui_agent._Desktop is None:
+            ui_agent._get_pwa()
+        for w in ui_agent._Desktop(backend="uia").windows(visible_only=False):
+            try:
+                title = w.window_text()
+                if "whatsapp" not in title.lower():
+                    continue
+                rect = _wa_el_rect(w)
+                out.append((_wa_win_score(title, rect), title, rect, w))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    out.sort(key=lambda c: -c[0])
+    if dump:
+        for score, title, rect, _ in out:
+            print("window score=%d title=%r rect=%s" % (score, title, rect))
+    return out
+
+
+def _wa_uia_window():
+    candidates = _wa_uia_window_candidates()
+    if candidates:
+        return candidates[0][3]
     try:
-        return ui_agent._find_window("WhatsApp")
-    except Exception as e:
-        print("[whatsapp_call] uia window lookup fail: " + str(e)[:60])
+        import ui_agent
+        if ui_agent.IS_WIN:
+            return ui_agent._find_window("WhatsApp")
+    except Exception:
+        pass
+    return None
+
+
+def _wa_gw_window():
+    try:
+        import pygetwindow as gw
+        wins = [w for w in gw.getWindowsWithTitle("WhatsApp")
+                if "whatsapp" in str(w.title).lower()]
+        return max(wins, key=lambda w: _wa_win_score(
+            w.title, (w.left, w.top, w.left + w.width, w.top + w.height)), default=None)
+    except Exception:
         return None
+
+
+def _wa_ocr_is_terminal(text):
+    low = str(text).lower()
+    return next((m for m in _WA_OCR_SELF_MARKERS if m in low), None)
+
+
+def _wa_ocr_regions():
+    regions = []
+    w = _wa_gw_window()
+    rect = ((w.left, w.top, w.left + w.width, w.top + w.height)
+            if w is not None else _wa_el_rect(_wa_uia_window()))
+    if rect:
+        l, t, r, b = rect
+        if l >= 0 and t >= 0 and r - l >= 100 and b - t >= 100:
+            regions.append(("whatsapp", (l, t, r - l, b - t)))
+    return regions + [("active", None), ("full", None)]
+
+
+def _wa_ocr_read(label, region):
+    import vision_control
+    if region is not None:
+        return " ".join(str(item[0]) for item in
+                        vision_control._ocr_screen(region_mode="custom", region=region))
+    return vision_control.read_screen(region_mode=label)
 
 
 def _wa_el_name(el):
@@ -880,22 +958,20 @@ def _wa_uia_click(el):
 
 
 def _wa_focus_call_window():
-    """CALL FIX (NOVA): click se pehle WhatsApp window front pe lao, warna
-    active-window vision click galat window pe chala jata hai."""
-    r = ""
     try:
-        import ui_agent
-        r = str(ui_agent.focus_window({"title": "WhatsApp"}))
+        w = _wa_gw_window()
+        if w is not None:
+            if getattr(w, "isMinimized", False):
+                w.restore()
+            w.activate()
+            return "WhatsApp activated"
     except Exception as e:
-        print("[whatsapp_call] ui_agent focus fail: " + str(e)[:50])
-    if (not r) or ("not found" in r.lower()) or ("missing" in r.lower()):
-        try:
-            import app_control
-            r = str(app_control.focus_window("WhatsApp"))
-        except Exception:
-            pass
-    print("[whatsapp_call] focus: " + r[:60])
-    return r
+        print("[whatsapp_call] focus fail: " + str(e)[:60])
+    try:
+        import app_control
+        return str(app_control.focus_window("WhatsApp"))
+    except Exception:
+        return "WhatsApp focus unavailable"
 
 
 def _wa_click_call_button_ui(video=False):
@@ -972,11 +1048,7 @@ def _wa_call_fallback_xy(video=False):
         print("[whatsapp_call] coords config fail: " + str(e)[:60])
         return None
     try:
-        import pygetwindow as gw
-        wins = [w for w in gw.getWindowsWithTitle("WhatsApp")
-                if getattr(w, "visible", True)]
-        exact = [w for w in wins if (getattr(w, "title", "") or "").strip() == "WhatsApp"]
-        w = (exact or wins)[0]
+        w = _wa_gw_window()
         x = int(w.left) + int(w.width) - x_from_right
         y = int(w.top) + y_from_top
     except Exception as e:
@@ -1001,7 +1073,7 @@ def _wa_call_state_note(video=False, wait=None):
       "absent"   - OCR chala par call screen ka koi hint nahi -> call nahi lagi
       "unknown"  - OCR hi nahi chal paya -> confirm nahi kar sakte
 
-    OCR pehle active window, phir full screen. "call ended" / "no answer" hint
+    OCR pehle WhatsApp bbox, phir active window aur full screen. "call ended" / "no answer" hint
     NAHI hain - chat ke call-log message me bhi wahi text hota hai.
     """
     if wait is None:
@@ -1014,13 +1086,17 @@ def _wa_call_state_note(video=False, wait=None):
         print("[whatsapp_call] verify skip (ocr unavailable): " + str(e)[:60])
         return WA_CALL_UNKNOWN, "ocr unavailable"
     text_seen = False
-    for mode in ("active", "full"):
+    for mode, region in _wa_ocr_regions():
         try:
-            t = str(vision_control.read_screen(region_mode=mode) or "")
+            t = str(_wa_ocr_read(mode, region) or "")
         except Exception as e:
             print("[whatsapp_call] ocr '%s' fail: %s" % (mode, str(e)[:50]))
             continue
         if not t or _WA_OCR_EMPTY_MARK in t.lower():
+            continue
+        marker = _wa_ocr_is_terminal(t)
+        if marker:
+            print("[whatsapp_call] OCR DISCARD [%s]: terminal marker %r" % (mode, marker))
             continue
         text_seen = True
         low = t.lower()
@@ -1047,11 +1123,12 @@ def _wa_call_already_active(video=False):
     return False
 
 
-def _wa_call_probe(video=False):
+def _wa_call_probe(video=False, end_call=False):
     """Debug dump - kuch click NAHI karta.
     Chalao: python comms_agent.py [--video] --call-probe
     Output Boss bhejta hai, phir weights/offsets tune hote hain."""
-    kind = "video call" if video else "voice call"
+    _wa_focus_call_window()
+    kind = "end call" if end_call else ("video call" if video else "voice call")
     lines = ["=== whatsapp_call probe (%s) ===" % kind]
     try:
         import ui_agent
@@ -1059,11 +1136,16 @@ def _wa_call_probe(video=False):
     except Exception as e:
         lines.append("ui_agent import fail: " + str(e)[:60])
     try:
+        for score, title, rect, _ in _wa_uia_window_candidates():
+            lines.append("window score=%d title=%r rect=%s" % (score, title, rect))
         w = _wa_uia_window()
+        lines.append("descendants count: %d" % (len(w.descendants()) if w is not None else 0))
+        lines.extend("near-miss name=%r type=%s rect=%s" % item for item in _wa_near_miss_names(w))
         lines.append("whatsapp uia window: " + ("mila" if w is not None else "NAHI mila"))
         lines.append("window rect: %s" % str(_wa_el_rect(w) if w else None))
-        cands = _wa_uia_call_candidates(video, dump=True)
-        lines.append("strict candidates: %d" % len(cands))
+        cands = (_wa_uia_end_call_candidates() if end_call
+                 else _wa_uia_call_candidates(video, dump=True))
+        lines.append("STRICT candidates: %d (strict candidates)" % len(cands))
         for score, name, ctype, _el in cands[:10]:
             lines.append("  score=%2d  type=%-10s  name=%r" % (score, ctype or "?", name))
         lines.append("name weights: %s" % str(_wa_call_name_weights(video)))
@@ -1072,19 +1154,135 @@ def _wa_call_probe(video=False):
         lines.append("candidate scan fail: " + str(e)[:80])
     try:
         import vision_control
-        for mode in ("active", "full"):
-            txt = " ".join(str(vision_control.read_screen(region_mode=mode) or "").split())
-            lines.append("ocr[%s]: %s" % (mode, txt[:200] or "(khaali)"))
+        for mode, region in _wa_ocr_regions():
+            try:
+                txt = " ".join(str(_wa_ocr_read(mode, region) or "").split())
+                marker = _wa_ocr_is_terminal(txt)
+                lines.append("ocr[%s]%s: %s" % (mode,
+                    " DISCARD terminal=" + marker if marker else "", txt[:200] or "(khaali)"))
+            except Exception as e:
+                lines.append("ocr[%s] unavailable: %s" % (mode, e))
     except Exception as e:
         lines.append("ocr unavailable: " + str(e)[:80])
     state, hint = _wa_call_state_note(video, wait=0)
     lines.append("call state: %s (%s)" % (state, hint))
     cfg = _load_json(CONFIG_PATH) or {}
     lines.append("wa_call_button_offsets: %s" % str(cfg.get("wa_call_button_offsets")))
+    lines.append("wa_end_call_button_offsets: %s" % str(cfg.get("wa_end_call_button_offsets")))
     lines.append("wa_call_names: %s" % str(cfg.get("wa_call_names")))
     out = "\n".join(lines)
     print(out)
     return out
+
+
+_WA_END_CALL_UI_NAME_WEIGHTS = {
+    "end call": 3, "end call button": 3, "end video call": 3,
+    "end video call button": 3, "hang up": 3, "hangup": 3,
+    "hang up button": 3, "decline": 2, "decline call": 2,
+    "reject": 2, "reject call": 2,
+}
+_WA_END_CALL_BAD_NAME_WORDS = ("missed", "ended", "no answer", "callback",
+                               "call back", "incoming", "outgoing")
+_WA_END_CALL_VISION_TARGET = (
+    "red round end call / hang up button on the WhatsApp calling screen. "
+    "it is NOT text inside chat messages and NOT the phone handset icon "
+    "in the chat header")
+
+
+def _wa_near_miss_names(window=None):
+    words = ("call", "video", "voice", "audio", "phone", "handset", "camera",
+             "hang", "decline", "reject")
+    w = window if window is not None else _wa_uia_window()
+    try:
+        return [(_wa_el_name(el), _wa_el_type(el), _wa_el_rect(el))
+                for el in w.descendants()
+                if any(word in _wa_el_name(el).lower() for word in words)]
+    except Exception:
+        return []
+
+
+def _wa_uia_end_call_candidates(dump=False):
+    try:
+        descs = _wa_uia_window().descendants()
+    except Exception:
+        return []
+    out = []
+    for el in descs:
+        name, ctype = _wa_el_name(el), _wa_el_type(el)
+        low = name.lower()
+        if low not in _WA_END_CALL_UI_NAME_WEIGHTS or any(
+                bad in low for bad in _WA_END_CALL_BAD_NAME_WORDS):
+            continue
+        score = _WA_END_CALL_UI_NAME_WEIGHTS[low] * 2 + (3 if ctype == "button" else 0)
+        out.append((score, name, ctype, el))
+    return sorted(out, key=lambda c: (-c[0], c[1].lower()))
+
+
+def _wa_click_end_call_button_ui():
+    for score, name, ctype, el in _wa_uia_end_call_candidates()[:_WA_CALL_MAX_CLICK_TRIES]:
+        ok, how = _wa_uia_click(el)
+        if ok:
+            return "uia %s %s" % (how, name)
+    return None
+
+
+def _wa_click_end_call_button_vision():
+    import vision_agent
+    res = vision_agent.vision_click(_WA_END_CALL_VISION_TARGET,
+                                   dry_run=False, use_active_window=True)
+    if isinstance(res, dict) and res.get("ok"):
+        return "vision_click"
+    return None
+
+
+def _wa_end_call_fallback_xy():
+    cfg = _load_json(CONFIG_PATH) or {}
+    off = cfg.get("wa_end_call_button_offsets")
+    if not isinstance(off, (list, tuple)) or len(off) != 2:
+        return None  # DEFAULT DISABLED
+    w = _wa_gw_window()
+    if w is None:
+        return None
+    xoff, yoff = int(off[0]), int(off[1])
+    if not (w.left >= 0 and w.top >= 0 and 0 <= xoff < w.width and 0 <= yoff < w.height):
+        return None
+    import pyautogui
+    pyautogui.click(int(w.left) + xoff, int(w.top + w.height) - yoff)
+    return "coords click"
+
+
+def _wa_end_call_probe():
+    return _wa_call_probe(end_call=True)
+
+
+def whatsapp_call_end(args=None):
+    """End current call without spoken confirmation; never infer success from unknown OCR."""
+    if _wa_call_wants_probe(args):
+        return _wa_end_call_probe()
+    _wa_focus_call_window()
+    state, hint = _wa_call_state_note(wait=0.6)
+    if state == WA_CALL_ABSENT:
+        return "Boss, abhi koi WhatsApp call chal hi nahi rahi, kaatne ko kuch nahi hai."
+    attempts = []
+    if state == WA_CALL_DETECTED:
+        for clicker in (_wa_click_end_call_button_ui, _wa_click_end_call_button_vision,
+                        _wa_end_call_fallback_xy):
+            try:
+                note = clicker()
+            except Exception as e:
+                attempts.append(str(e)[:100])
+                continue
+            if not note:
+                attempts.append(clicker.__name__ + " unavailable")
+                continue
+            state, hint = _wa_call_state_note()
+            attempts.append("%s verify=%s: %s" % (note, state, hint))
+            if state == WA_CALL_ABSENT:
+                return "WhatsApp call kaat di."
+    else:
+        attempts.append("active call verify unknown: " + hint)
+    return ("Call kaat nahi paya, fail: " + " ; ".join(attempts)
+            + ". Debug: python comms_agent.py --end-call-probe")
 
 
 def _wa_unpack_result(res):
@@ -1233,6 +1431,9 @@ if __name__ == "__main__":
     # CALL DEBUG: python comms_agent.py [--video] --call-probe
     # WhatsApp ke open chat me strict UIA candidates + OCR dump karta hai,
     # kuch click NAHI karta. Output Boss bhejta hai -> weights tune hote hain.
+    if "--end-call-probe" in sys.argv:
+        _wa_end_call_probe()
+        sys.exit(0)
     if "--call-probe" in sys.argv:
         _wa_call_probe("--video" in sys.argv)
         sys.exit(0)

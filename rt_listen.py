@@ -40,12 +40,12 @@ VAD_THRESHOLD = 0.38
 # 1) Threshold 0.90: speaker echo ka VAD prob aksar 0.6-0.85 hota hai,
 #    seedha bola gaya user speech hi 0.90+ cross karta hai.
 BARGE_IN_THRESHOLD = 0.90
-# 2) Grace period 600ms: TTS start hote hi pehle ~600ms speaker ramp-up/echo
+# 2) Grace period 400ms: TTS start hote hi pehle ~400ms speaker ramp-up/echo
 #    ko poori tarah ignore karo (start_monitor_time check).
-BARGE_IN_GRACE_MS = 600
-# 3) 8 consecutive frames (~256ms) sustained speech chahiye - echo blips
+BARGE_IN_GRACE_MS = 400
+# 3) 5 consecutive frames (~160ms) sustained speech chahiye - echo blips
 #    itne lambe sustained high-prob frames nahi dete.
-BARGE_IN_MIN_FRAMES = 8
+BARGE_IN_MIN_FRAMES = 5
 # 4) Energy gate: captured barge-in audio STT pe bhejne se pehle RMS check -
 #    NOVA ki speaker-echo awaaz mic pe door/halki hoti hai (low RMS),
 #    user ki seedhi awaaz loud hoti hai (high RMS).
@@ -262,7 +262,7 @@ def start_barge_in_monitor(on_barge_in):
                 flat = data.flatten()
 
                 # ECHO FIX (NOVA): grace period - TTS shuru hone ke pehle
-                # 600ms tak barge-in detection band (speaker ramp-up echo)
+                # 400ms tak barge-in detection band (speaker ramp-up echo)
                 if (time.time() - start_monitor_time) * 1000.0 < BARGE_IN_GRACE_MS:
                     consecutive_speech = 0
                     captured_chunks = []

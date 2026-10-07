@@ -461,6 +461,38 @@ def x_crash_resilience():
 
 
 # ================= RUNNER =================
+def x_wa_window_ocr_guard():
+    import comms_agent as c
+    assert c._wa_win_score("WhatsApp", (0, 0, 1000, 800)) > c._wa_win_score(
+        "WhatsApp", (-32000, -32000, -31763, -31961))
+    for marker in c._WA_OCR_SELF_MARKERS:
+        assert c._wa_ocr_is_terminal(marker.upper() + " ringing") == marker
+    assert c._wa_ocr_is_terminal("End call") is None
+    return "minimized sentinel scoring + terminal discard"
+
+
+def x_wa_end_wiring():
+    import comms_agent as c
+    import policy, tools, think, planner, verifier
+    assert policy.classify("whatsapp_call_end") == policy.SAFE
+    assert policy.classify("whatsapp_call") == policy.ASK
+    for registry in (tools.TOOLS, think.TOOL_SPECS, planner.TOOL_SCHEMAS,
+                     verifier._SUCCESS_HINTS):
+        assert "whatsapp_call_end" in registry
+    assert c._WA_END_CALL_UI_NAME_WEIGHTS["end call"] == 3
+    assert "NOT text inside chat messages" in c._WA_END_CALL_VISION_TARGET
+    return "end-call SAFE + all registries"
+
+
+def x_barge_tuning():
+    import rt_listen as r
+    assert r.BARGE_IN_GRACE_MS == 400
+    assert r.BARGE_IN_MIN_FRAMES == 5
+    assert r.BARGE_IN_THRESHOLD == 0.90
+    assert r.BARGE_IN_MIN_RMS == 500.0
+    return "400ms / 5 frames; echo gates preserved"
+
+
 def main():
     print("=" * 62)
     print("  NOVA QA REPORT - Phases 1-6 (code-level tests)")
@@ -501,7 +533,10 @@ def main():
         ("Call Fix", "honest fail (no false success)", x_call_honest_fail, False),
         ("Call Fix", "stale pending + 180s TTL", x_confirmation_guard, False),
         ("Call Fix", "crash resilience", x_crash_resilience, False),
-        ("Wiring", "pytest suite", x_existing_tests, True),
+        ("Call Fix", "window + OCR leakage", x_wa_window_ocr_guard, False),
+        ("Call End", "safe tool wiring", x_wa_end_wiring, False),
+        ("Barge-in", "echo tuning", x_barge_tuning, False),
+        ("Wiring", "pytest suite", x_existing_tests, False),
     ]
     for phase, name, fn, warn in plan:
         check(phase, name, fn, warn_only=warn)

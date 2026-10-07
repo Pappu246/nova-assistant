@@ -2,8 +2,8 @@
 Barge-in ECHO fix tests (Problem 2) - rt_listen.py
 NOVA apni hi TTS awaaz se interrupt NA ho:
   - BARGE_IN_THRESHOLD 0.90
-  - 600ms grace period (start_monitor_time check)
-  - >= 8 consecutive speech frames
+  - 400ms grace period (start_monitor_time check)
+  - >= 5 consecutive speech frames
   - captured audio pe energy check (echo discard) before STT
 Fake sounddevice stream se real monitor code ko synthetic frames feed karte hain.
 """
@@ -89,25 +89,25 @@ def _run_monitor(frames, wait_sec):
 
 def test_constants_tuned_for_echo():
     assert rt_listen.BARGE_IN_THRESHOLD == 0.90
-    assert rt_listen.BARGE_IN_GRACE_MS == 600
-    assert rt_listen.BARGE_IN_MIN_FRAMES == 8
+    assert rt_listen.BARGE_IN_GRACE_MS == 400
+    assert rt_listen.BARGE_IN_MIN_FRAMES == 5
     assert rt_listen.BARGE_IN_MIN_RMS > 0
 
 
 def test_grace_period_blocks_initial_echo(fake_mic, monkeypatch):
-    """TTS start ke pehle 600ms me loud frames aayein to bhi trigger NA ho."""
+    """TTS start ke pehle 400ms me loud frames aayein to bhi trigger NA ho."""
     # Sirf grace window ke andar hi loud frames (phir silence)
     frames = [_frame(LOUD)] * 25  # ~25 frames, sab grace ke andar consume honge
     _FakeStream.frames = frames
     fired = threading.Event()
     rt_listen.start_barge_in_monitor(fired.set)
-    time.sleep(0.45)  # < 600ms grace
+    time.sleep(0.30)  # < 400ms grace
     assert not fired.is_set(), "Grace period me barge-in trigger nahi hona chahiye"
     rt_listen.stop_barge_in_monitor()
 
 
 def test_sustained_loud_user_speech_triggers(fake_mic, monkeypatch):
-    """Grace ke baad 8+ consecutive loud frames -> barge-in trigger."""
+    """Grace ke baad 5+ consecutive loud frames -> barge-in trigger."""
     monkeypatch.setattr(rt_listen, "BARGE_IN_GRACE_MS", 50)  # test ko fast rakho
     frames = [_frame(LOUD)] * 400
     fired, captured = _run_monitor(frames, wait_sec=3.0)
@@ -125,12 +125,12 @@ def test_echo_level_audio_does_not_trigger(fake_mic, monkeypatch):
     assert captured is None
 
 
-def test_short_bursts_below_8_frames_do_not_trigger(fake_mic, monkeypatch):
-    """4-frame ke chhote bursts (echo blips) kabhi 8 consecutive nahi bante."""
+def test_short_bursts_below_5_frames_do_not_trigger(fake_mic, monkeypatch):
+    """4-frame ke chhote bursts (echo blips) kabhi 5 consecutive nahi bante."""
     monkeypatch.setattr(rt_listen, "BARGE_IN_GRACE_MS", 50)
     pattern = ([_frame(LOUD)] * 4 + [_frame(QUIET)] * 6) * 25
     fired, captured = _run_monitor(pattern, wait_sec=1.5)
-    assert not fired, "<8 consecutive frames pe barge-in NAHI hona chahiye"
+    assert not fired, "<5 consecutive frames pe barge-in NAHI hona chahiye"
 
 
 def test_captured_echo_audio_discarded_before_stt(fake_mic):
@@ -138,16 +138,23 @@ def test_captured_echo_audio_discarded_before_stt(fake_mic):
     # Low-RMS captured audio (echo) -> None
     rt_listen._barge_in_active = False
     rt_listen._barge_in_thread = None
-    rt_listen._barge_in_audio_captured = np.full(16000, 100, dtype=np.int16)  # rms 100 < 500
+    rt_listen._barge_in_audio_captured = np.full(14000, 100, dtype=np.int16)  # rms 100 < 500
     assert rt_listen.stop_barge_in_monitor() is None
 
     # High-RMS captured audio (real user) -> wapas milta hai
-    rt_listen._barge_in_audio_captured = np.full(16000, 2000, dtype=np.int16)
+    rt_listen._barge_in_audio_captured = np.full(14000, 2000, dtype=np.int16)
     out = rt_listen.stop_barge_in_monitor()
-    assert out is not None and len(out) == 16000
+    assert out is not None and len(out) == 14000
 
 
 def test_is_probable_user_speech_helper():
     assert not rt_listen._is_probable_user_speech(np.zeros(1000, dtype=np.int16))
     assert not rt_listen._is_probable_user_speech(np.full(1000, 100, dtype=np.int16))
     assert rt_listen._is_probable_user_speech(np.full(1000, 2000, dtype=np.int16))
+
+
+@pytest.mark.parametrize("count, expected", [(4, False), (5, True)])
+def test_exact_five_frame_boundary(fake_mic, monkeypatch, count, expected):
+    monkeypatch.setattr(rt_listen, "BARGE_IN_GRACE_MS", 0)
+    fired, _ = _run_monitor([_frame(LOUD)] * count, wait_sec=0.5)
+    assert fired is expected
