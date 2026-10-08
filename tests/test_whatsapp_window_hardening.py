@@ -456,23 +456,46 @@ def test_windows_native_dpi_scope_restores_after_exception():
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='native Windows thread DPI API')
 def test_windows_native_dpi_does_not_change_process_default():
-    # GetProcessDpiAwareness(NULL) is documented as equivalent to querying
-    # GetThreadDpiAwarenessContext: it SHOULD change inside a thread override.
-    # Use the process-specific context API, not that legacy thread-sensitive API.
-    get, equal, awareness = _native_dpi_functions()
-    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    current_process = kernel32.GetCurrentProcess
-    current_process.argtypes, current_process.restype = [], ctypes.c_void_p
-    user32 = ctypes.WinDLL('user32', use_last_error=True)
-    process_context = user32.GetDpiAwarenessContextForProcess
-    process_context.argtypes, process_context.restype = [ctypes.c_void_p], ctypes.c_void_p
-    process = current_process()
-    before = process_context(process)
-    assert before
+    # Current-process shortcuts (including GetCurrentProcess's pseudo handle)
+    # can report the calling thread's override on Windows. An independent
+    # observer with a real handle to THIS process measures the process default,
+    # not its own DPI context or the overridden test thread's context.
+    import os
+    import subprocess
+    get, _, awareness = _native_dpi_functions()
+    script = """
+import ctypes, sys
+kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]
+kernel32.OpenProcess.restype = ctypes.c_void_p
+kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+kernel32.CloseHandle.restype = ctypes.c_bool
+user32 = ctypes.WinDLL('user32', use_last_error=True)
+context = user32.GetDpiAwarenessContextForProcess
+context.argtypes, context.restype = [ctypes.c_void_p], ctypes.c_void_p
+awareness = user32.GetAwarenessFromDpiAwarenessContext
+awareness.argtypes, awareness.restype = [ctypes.c_void_p], ctypes.c_int
+process = kernel32.OpenProcess(0x1000, False, int(sys.argv[1]))
+assert process, ctypes.get_last_error()
+try:
+    value = context(process)
+    assert value, ctypes.get_last_error()
+    print(awareness(value))
+finally:
+    assert kernel32.CloseHandle(process)
+"""
+    def process_default():
+        result = subprocess.run([sys.executable, '-c', script, str(os.getpid())],
+                                capture_output=True, text=True, check=True,
+                                timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+        value = int(result.stdout.strip())
+        assert value in (0, 1, 2)
+        return value
+    before = process_default()
     with c._wa_physical_pixels('native process check') as ready:
         assert ready and awareness(get()) == 2
-        assert equal(process_context(process), before)
-    assert equal(process_context(process), before)
+        assert process_default() == before
+    assert process_default() == before
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='native Windows thread DPI API')
