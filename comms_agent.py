@@ -11,6 +11,7 @@ import datetime
 import threading
 import webbrowser
 import urllib.parse
+from contextlib import contextmanager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "comms_config.json")   # gmail + app_password (gitignored)
@@ -487,13 +488,17 @@ def _wa_desktop_installed():
 def _wa_activate(w):
     try:
         w.activate()
-    except Exception:
+    except Exception as e:
+        _wa_diagnostic("chat activate fail; checking actual foreground", e)
+        if _wa_foreground_status(w)[0]:
+            return True
         try:
             w.minimize()
             time.sleep(0.3)
             w.maximize()
-        except Exception:
-            pass
+        except Exception as fallback_error:
+            _wa_diagnostic("chat activation fallback fail", fallback_error)
+    return _wa_foreground_status(w)[0]
 
 
 def _wa_open_chat_and_run(name, after_open=None, wait_load=12):
@@ -508,15 +513,14 @@ def _wa_open_chat_and_run(name, after_open=None, wait_load=12):
     except Exception as e:
         return False, f"automation lib missing: {e}"
     desktop = _wa_desktop_installed()
+    mode = "desktop" if desktop else "web"
     try:
         if desktop:
             os.system("start whatsapp://")
-            mode = "desktop"
         else:
             webbrowser.open("https://web.whatsapp.com/")
-            mode = "web"
-    except Exception:
-        pass
+    except Exception as e:
+        _wa_diagnostic("WhatsApp launch fail; checking existing window", e)
     # Window ka wait karo
     wins = []
     deadline = time.time() + wait_load
@@ -524,7 +528,8 @@ def _wa_open_chat_and_run(name, after_open=None, wait_load=12):
         time.sleep(1)
         try:
             wins = [w for w in gw.getWindowsWithTitle("WhatsApp") if w.visible]
-        except Exception:
+        except Exception as e:
+            _wa_diagnostic("chat GW enumeration fail", e)
             wins = []
         if wins:
             break
@@ -533,12 +538,15 @@ def _wa_open_chat_and_run(name, after_open=None, wait_load=12):
     # Desktop app ko prefer karo exact title se
     exact = [w for w in wins if (w.title or "").strip() == "WhatsApp"]
     w = exact[0] if exact else wins[0]
-    _wa_activate(w)
+    if not _wa_activate(w):
+        return False, "WhatsApp foreground unverified; chat input blocked"
     time.sleep(1.2)
     old_pause, old_failsafe = pyautogui.PAUSE, pyautogui.FAILSAFE
     pyautogui.PAUSE = 0.05
     pyautogui.FAILSAFE = False
     try:
+        if not _wa_screen_click_allowed("chat search input", w):
+            return False, "WhatsApp foreground unverified; chat input blocked"
         pyautogui.hotkey("esc")
         time.sleep(0.4)
         if mode == "desktop":
@@ -547,18 +555,10 @@ def _wa_open_chat_and_run(name, after_open=None, wait_load=12):
             # Web: search box click (configurable coords) fallback keyboard combo
             cfg = _load_json(CONFIG_PATH)
             xy = cfg.get("wa_web_search_xy")
-            clicked = False
-            if xy and len(xy) == 2:
-                try:
-                    pyautogui.click(int(xy[0]), int(xy[1]))
-                    clicked = True
-                except Exception:
-                    clicked = False
-            if not clicked:
-                try:
-                    pyautogui.click(w.left + 150, w.top + 130)
-                except Exception:
-                    pyautogui.hotkey("ctrl", "alt", "/")
+            if not _wa_web_search_click(w, xy, pyautogui):
+                if not _wa_screen_click_allowed("web keyboard search", w):
+                    return False, "WhatsApp foreground unverified; chat input blocked"
+                pyautogui.hotkey("ctrl", "alt", "/")
         time.sleep(0.8)
         # Naam paste (unicode safe) -> pehla result khulta hai
         pyperclip.copy(str(name))
@@ -782,7 +782,62 @@ def _wa_win_score(title, rect):
     return score
 
 
-def _wa_uia_window_candidates(dump=False):
+def _wa_diagnostic(operation, error):
+    print("[whatsapp_call] %s: %s: %s" % (
+        operation, type(error).__name__, str(error).replace("\n", " ")[:180]))
+
+
+def _wa_on_windows():
+    return sys.platform == "win32"
+
+
+def _wa_dpi_api():
+    # DPI_AWARENESS_CONTEXT is pointer-sized, including the negative pseudo
+    # handles. ctypes' default c_int return would truncate a previous context
+    # on 64-bit Windows and make restoration unreliable.
+    import ctypes
+    setter = ctypes.WinDLL("user32", use_last_error=True).SetThreadDpiAwarenessContext
+    setter.argtypes = [ctypes.c_void_p]
+    setter.restype = ctypes.c_void_p
+    return setter
+
+
+@contextmanager
+def _wa_physical_pixels(operation):
+    """Physical pixels for THIS thread only; nested scopes restore in finally.
+
+    Do not set process-wide DPI awareness or preload pywinauto as a DPI fix.
+    The thread override keeps GW rectangles and screenshot/click consumers in
+    the same coordinate space regardless of a library's process DPI default.
+    Non-Windows has no Windows DPI virtualization. On Windows, unsupported or
+    failed setup is fail-closed (no legacy/global DPI fallback).
+    """
+    if not _wa_on_windows():
+        yield True
+        return
+    setter, previous, ready = None, None, False
+    try:
+        setter = _wa_dpi_api()
+        previous = setter(-4)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        if not previous:
+            import ctypes
+            raise OSError("SetThreadDpiAwarenessContext failed (winerror=%s)" %
+                          getattr(ctypes, "get_last_error", lambda: 0)())
+        ready = True
+    except Exception as e:
+        _wa_diagnostic(operation + " DPI setup fail; unsafe screen operation skipped", e)
+    try:
+        yield ready
+    finally:
+        if previous:
+            try:
+                if not setter(previous):
+                    raise OSError("previous thread DPI context restore returned NULL")
+            except Exception as e:
+                _wa_diagnostic(operation + " DPI restore fail", e)
+
+
+def _wa_uia_window_candidates(dump=False, backend="uia"):
     out = []
     try:
         import ui_agent
@@ -790,20 +845,22 @@ def _wa_uia_window_candidates(dump=False):
             return out
         if ui_agent._Desktop is None:
             ui_agent._get_pwa()
-        for w in ui_agent._Desktop(backend="uia").windows(visible_only=False):
+        if ui_agent._Desktop is None:
+            raise RuntimeError("pywinauto Desktop unavailable")
+        for w in ui_agent._Desktop(backend=backend).windows(visible_only=False):
             try:
                 title = w.window_text()
                 if "whatsapp" not in title.lower():
                     continue
-                rect = _wa_el_rect(w)
+                rect = _wa_el_rect(w, diagnostic=backend + " window rectangle fail")
                 out.append((_wa_win_score(title, rect), title, rect, w))
-            except Exception:
-                continue
-    except Exception:
-        pass
+            except Exception as e:
+                _wa_diagnostic(backend + " window enumeration item fail", e)
+    except Exception as e:
+        _wa_diagnostic(backend + " window enumeration fail", e)
     out.sort(key=lambda c: -c[0])
     if dump:
-        for score, title, rect, _ in out:
+        for score, title, rect, _ in out[:10]:
             print("window score=%d title=%r rect=%s" % (score, title, rect))
     return out
 
@@ -812,24 +869,164 @@ def _wa_uia_window():
     candidates = _wa_uia_window_candidates()
     if candidates:
         return candidates[0][3]
-    try:
-        import ui_agent
-        if ui_agent.IS_WIN:
-            return ui_agent._find_window("WhatsApp")
-    except Exception:
-        pass
-    return None
+    # ui_agent._find_window silently catches backend errors. Enumerate this
+    # fallback here instead, so missing windows and failed enumeration differ.
+    with _wa_physical_pixels("win32 window fallback") as ready:
+        candidates = _wa_uia_window_candidates(backend="win32") if ready else []
+    return candidates[0][3] if candidates else None
+
+
+def _wa_gw_rect(w):
+    if w is None:
+        return None
+    with _wa_physical_pixels("GW bbox") as ready:
+        if not ready:
+            return None
+        try:
+            l, t, width, height = int(w.left), int(w.top), int(w.width), int(w.height)
+            return l, t, l + width, t + height
+        except Exception as e:
+            _wa_diagnostic("GW window rectangle fail", e)
+            return None
 
 
 def _wa_gw_window():
+    with _wa_physical_pixels("GW enumeration") as ready:
+        if not ready:
+            return None
+        try:
+            import pygetwindow as gw
+            candidates = []
+            for w in gw.getWindowsWithTitle("WhatsApp"):
+                try:
+                    title = str(w.title)
+                    if "whatsapp" in title.lower():
+                        candidates.append((_wa_win_score(title, _wa_gw_rect(w)), w))
+                except Exception as e:
+                    _wa_diagnostic("GW window enumeration item fail", e)
+            return max(candidates, key=lambda item: item[0])[1] if candidates else None
+        except Exception as e:
+            _wa_diagnostic("GW window enumeration fail", e)
+            return None
+
+
+def _wa_window_handle(window):
+    for obj, attr in ((window, "_hWnd"), (window, "handle"),
+                      (getattr(window, "element_info", None), "handle")):
+        try:
+            value = getattr(obj, attr, None)
+            if value:
+                return int(value)
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _wa_window_title(window):
+    if window is None:
+        return ""
+    try:
+        title = getattr(window, "title", None)
+        return str(title if title is not None else window.window_text()).strip()
+    except Exception as e:
+        _wa_diagnostic("window title read fail", e)
+        return _wa_el_name(window)
+
+
+def _wa_foreground_info():
+    """HWND + title, not the return string from activate()/focus_window()."""
+    if _wa_on_windows():
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.GetForegroundWindow.argtypes = []
+            user32.GetForegroundWindow.restype = wintypes.HWND
+            user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+            user32.GetWindowTextLengthW.restype = ctypes.c_int
+            user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+            user32.GetWindowTextW.restype = ctypes.c_int
+            hwnd = user32.GetForegroundWindow()
+            if not hwnd:
+                return None, ""
+            buf = ctypes.create_unicode_buffer(user32.GetWindowTextLengthW(hwnd) + 1)
+            user32.GetWindowTextW(hwnd, buf, len(buf))
+            return int(hwnd), buf.value
+        except Exception as e:
+            _wa_diagnostic("native foreground read fail; GW fallback", e)
     try:
         import pygetwindow as gw
-        wins = [w for w in gw.getWindowsWithTitle("WhatsApp")
-                if "whatsapp" in str(w.title).lower()]
-        return max(wins, key=lambda w: _wa_win_score(
-            w.title, (w.left, w.top, w.left + w.width, w.top + w.height)), default=None)
-    except Exception:
-        return None
+        active = gw.getActiveWindow()
+        if active is not None:
+            return _wa_window_handle(active), _wa_window_title(active)
+        return None, str(gw.getActiveWindowTitle() or "")
+    except Exception as e:
+        _wa_diagnostic("GW foreground fallback fail", e)
+        return None, ""
+
+
+def _wa_screen_window(element=None):
+    if element is not None:
+        try:
+            return element.top_level_parent()
+        except AttributeError:
+            pass  # a wrapper without a parent API: use the selected window
+        except Exception as e:
+            _wa_diagnostic("UIA top-level window fallback", e)
+    w = _wa_gw_window()
+    return w if w is not None else _wa_uia_window()
+
+
+def _wa_foreground_status(window=None):
+    try:
+        w = window if window is not None else _wa_screen_window()
+        expected = _wa_window_handle(w)
+        active, title = _wa_foreground_info()
+        if expected and active:
+            ok = expected == active
+            return ok, "HWND target=%s foreground=%s" % (expected, active)
+        # Handles unavailable: exact title fallback, never a fuzzy substring
+        # in an unrelated terminal title. A known HWND mismatch cannot get here.
+        wanted = _wa_window_title(w) if w is not None else "WhatsApp"
+        ok = ("whatsapp" in wanted.lower() and title.strip().lower() == wanted.lower())
+        return ok, "title fallback target=%r foreground=%r" % (wanted, title)
+    except Exception as e:
+        _wa_diagnostic("foreground verification fail", e)
+        return False, "foreground unavailable"
+
+
+def _wa_screen_click_allowed(operation, window=None):
+    ok, detail = _wa_foreground_status(window)
+    if not ok:
+        print("[whatsapp_call] %s BLOCKED: foreground unverified (%s)" % (operation, detail))
+    return ok
+
+
+def _wa_focus_call_window():
+    notes = []
+    w = _wa_gw_window()
+    if w is not None:
+        try:
+            if getattr(w, "isMinimized", False):
+                w.restore()
+            w.activate()
+            notes.append("activate returned")
+        except Exception as e:
+            _wa_diagnostic("activate fail; checking actual foreground", e)
+            notes.append("activate exception: " + str(e)[:100])
+    # Windows sometimes reports error 0 even though the activation worked.
+    # Verify before trying any fallback that might steal focus again.
+    ok, detail = _wa_foreground_status(w)
+    if not ok:
+        try:
+            import app_control
+            notes.append("fallback: " + str(app_control.focus_window("WhatsApp"))[:100])
+        except Exception as e:
+            _wa_diagnostic("focus fallback fail", e)
+            notes.append("focus fallback exception")
+        ok, detail = _wa_foreground_status(w)
+    return "foreground %s (%s); %s" % (
+        "verified" if ok else "UNVERIFIED", detail, "; ".join(notes))
 
 
 def _wa_ocr_is_terminal(text):
@@ -838,23 +1035,29 @@ def _wa_ocr_is_terminal(text):
 
 
 def _wa_ocr_regions():
-    regions = []
-    w = _wa_gw_window()
-    rect = ((w.left, w.top, w.left + w.width, w.top + w.height)
-            if w is not None else _wa_el_rect(_wa_uia_window()))
-    if rect:
-        l, t, r, b = rect
-        if l >= 0 and t >= 0 and r - l >= 100 and b - t >= 100:
-            regions.append(("whatsapp", (l, t, r - l, b - t)))
-    return regions + [("active", None), ("full", None)]
+    with _wa_physical_pixels("OCR regions") as ready:
+        if not ready:
+            return []
+        regions = []
+        rect = _wa_gw_rect(_wa_gw_window())
+        if rect is None:
+            rect = _wa_el_rect(_wa_uia_window())
+        if rect:
+            l, t, r, b = rect
+            if l >= 0 and t >= 0 and r - l >= 100 and b - t >= 100:
+                regions.append(("whatsapp", (l, t, r - l, b - t)))
+        return regions + [("active", None), ("full", None)]
 
 
 def _wa_ocr_read(label, region):
-    import vision_control
-    if region is not None:
-        return " ".join(str(item[0]) for item in
-                        vision_control._ocr_screen(region_mode="custom", region=region))
-    return vision_control.read_screen(region_mode=label)
+    with _wa_physical_pixels("OCR capture") as ready:
+        if not ready:
+            raise RuntimeError("physical-pixel DPI context unavailable; OCR skipped")
+        import vision_control
+        if region is not None:
+            return " ".join(str(item[0]) for item in
+                            vision_control._ocr_screen(region_mode="custom", region=region))
+        return vision_control.read_screen(region_mode=label)
 
 
 def _wa_el_name(el):
@@ -875,112 +1078,162 @@ def _wa_el_type(el):
         return ""
 
 
-def _wa_el_rect(el):
+def _wa_el_rect(el, diagnostic=None):
+    if el is None:
+        return None
     try:
         r = el.rectangle()
         return (int(r.left), int(r.top), int(r.right), int(r.bottom))
-    except Exception:
+    except Exception as e:
+        if diagnostic:
+            _wa_diagnostic(diagnostic, e)
         return None
 
 
-def _wa_uia_call_candidates(video=False, dump=False):
-    """WhatsApp window ke descendants me STRICT naam-match wale call buttons.
+def _wa_control_key(el, name, ctype, rect):
+    """Runtime ID is authoritative; geometry is ONLY the no-ID fallback.
 
-    Fuzzy match NAHI - sirf exact naam (lowercase) match hota hai, warna chat
-    ke "Voice call" / "Missed voice call" message pe click ho jata hai (yehi
-    purana bug tha). Bad-words wale naam skip.
-
-    score = weight*2
-            + 5  agar header region me (top 22% height AND left >= 25% width)
-            + 3  agar control_type == 'button'
-
-    Returns: [(score, name, control_type, element), ...] score desc sorted.
+    Different runtime IDs can legitimately share a name/type/rectangle. Do
+    not merge them using a second geometry-only dedup pass.
     """
-    weights = _wa_call_name_weights(video)
-    w = _wa_uia_window()
-    if w is None:
-        if dump:
-            print("[whatsapp_call][probe] uia window nahi mila - koi candidate nahi")
-        return []
     try:
-        descs = w.descendants()
+        rid = el.element_info.runtime_id
+        rid = rid() if callable(rid) else rid
+        if rid is not None:
+            rid = tuple(rid)
+            if rid:
+                hash(rid)
+                return "runtime", rid
+    except Exception:
+        pass  # missing/stale/unsupported RuntimeId: documented fallback
+    return "name/type/rect", name.lower(), ctype, rect
+
+
+_WA_PROBE_LIMIT = 10
+_WA_NEAR_MISS_WORDS = ("call", "video", "voice", "audio", "phone", "handset", "camera",
+                       "hang", "decline", "reject")
+
+
+def _wa_scan_call_controls(window, video=False, end_call=False):
+    """One descendants snapshot for strict raw/unique counts and compact probes."""
+    weights = _WA_END_CALL_UI_NAME_WEIGHTS if end_call else _wa_call_name_weights(video)
+    bad_words = _WA_END_CALL_BAD_NAME_WORDS if end_call else _WA_CALL_BAD_NAME_WORDS
+    scan = dict(window=window, rect=_wa_el_rect(window), descendants=0, raw=0,
+                candidates=[], near_misses=[], near_miss_count=0, error=None)
+    if window is None:
+        return scan
+    try:
+        descs = list(window.descendants())
+        scan["descendants"] = len(descs)
     except Exception as e:
-        print("[whatsapp_call] descendants fail: " + str(e)[:60])
-        return []
-    win_rect = _wa_el_rect(w)
-    out = []
+        _wa_diagnostic("%s descendants fail" % ("end-call" if end_call else "call"), e)
+        scan["error"] = "%s: %s" % (type(e).__name__, str(e)[:160])
+        return scan
+    raw, near_seen = [], set()
     for el in descs:
         name = _wa_el_name(el)
-        if not name:
-            continue
         low = name.lower()
-        if low not in weights:
-            continue                                  # exact match only
-        if any(bad in low for bad in _WA_CALL_BAD_NAME_WORDS):
-            continue                                  # call-log message, button nahi
+        strict = low in weights and not any(bad in low for bad in bad_words)
+        if not strict and not any(word in low for word in _WA_NEAR_MISS_WORDS):
+            continue
+        ctype, rect = _wa_el_type(el), _wa_el_rect(el)
+        if not strict:
+            # Display-only dedup: long/repeated chat-history names must never
+            # flood the probe, nor become click candidates.
+            key = (name, ctype, rect)
+            if key not in near_seen:
+                near_seen.add(key)
+                if len(scan["near_misses"]) < _WA_PROBE_LIMIT:
+                    scan["near_misses"].append(key)
+            continue
         score = weights[low] * 2
-        rect = _wa_el_rect(el)
-        if rect and win_rect:
-            wl, wt, wr, wb = win_rect
-            ww = max(1, wr - wl)
-            wh = max(1, wb - wt)
-            el_l, el_t = rect[0], rect[1]
-            if ((el_t - wt) <= wh * _WA_CALL_HEADER_TOP_RATIO
-                    and (el_l - wl) >= ww * _WA_CALL_HEADER_LEFT_RATIO):
+        if not end_call and rect and scan["rect"]:
+            wl, wt, wr, wb = scan["rect"]
+            if ((rect[1] - wt) <= max(1, wb - wt) * _WA_CALL_HEADER_TOP_RATIO
+                    and (rect[0] - wl) >= max(1, wr - wl) * _WA_CALL_HEADER_LEFT_RATIO):
                 score += _WA_CALL_HEADER_BONUS
-        ctype = _wa_el_type(el)
         if ctype == "button":
             score += _WA_CALL_BUTTON_BONUS
-        out.append((score, name, ctype, el))
-        if dump:
-            print("[whatsapp_call][probe] candidate score=%2d type=%-10s name=%r"
-                  % (score, ctype or "?", name))
-    out.sort(key=lambda t: (-t[0], t[1].lower()))
+        raw.append(((score, name, ctype, el), _wa_control_key(el, name, ctype, rect)))
+    scan["raw"] = len(raw)
+    scan["near_miss_count"] = len(near_seen)
+    seen = set()
+    for candidate, key in sorted(raw, key=lambda item: (-item[0][0], item[0][1].lower())):
+        if key not in seen:
+            seen.add(key)
+            scan["candidates"].append(candidate)
+    return scan
+
+
+def _wa_scan_lines(scan):
+    w, rect = scan["window"], scan["rect"]
+    title = _wa_window_title(w)
+    lines = ["whatsapp uia window: " + ("mila" if w is not None else "NAHI mila"),
+             "window score=%d title=%r rect=%s" % (_wa_win_score(title, rect), title, rect),
+             "descendants count: %d" % scan["descendants"],
+             "STRICT candidates: raw=%d unique=%d (strict candidates)" %
+             (scan["raw"], len(scan["candidates"]))]
+    if scan["error"]:
+        lines.append("candidate scan fail: " + scan["error"])
+    for score, name, ctype, el in scan["candidates"][:_WA_PROBE_LIMIT]:
+        lines.append("  score=%2d type=%s name=%r rect=%s" %
+                     (score, ctype or "?", name[:140], _wa_el_rect(el)))
+    lines.append("near-miss unique=%d (showing %d)" %
+                 (scan["near_miss_count"], len(scan["near_misses"])))
+    lines.extend("near-miss name=%r type=%s rect=%s" % (name[:140], ctype, rect)
+                 for name, ctype, rect in scan["near_misses"])
+    return lines
+
+
+def _wa_uia_call_candidates(video=False, dump=False):
+    """STRICT exact-name scoring unchanged; return unique controls, best first."""
+    scan = _wa_scan_call_controls(_wa_uia_window(), video=video)
     if dump:
-        print("[whatsapp_call][probe] %d strict candidate(s) for %s call"
-              % (len(out), "video" if video else "voice"))
-    return out
+        print("\n".join(_wa_scan_lines(scan)))
+    return scan["candidates"]
+
+
+def _wa_point_in_rect(rect, x, y):
+    return bool(rect and rect[0] > _WA_OFFSCREEN_LIMIT and rect[1] > _WA_OFFSCREEN_LIMIT
+                and rect[0] <= x < rect[2] and rect[1] <= y < rect[3])
+
+
+def _wa_screen_rect(window):
+    return (_wa_gw_rect(window) if hasattr(window, "left")
+            else _wa_el_rect(window, diagnostic="screen window rectangle fail"))
 
 
 def _wa_uia_click(el):
-    """pehle invoke() (DPI-safe, screen coords ki zaroorat nahi),
-    fail hone pe click_input(). Returns (ok, how)."""
+    """Coordinate-free invoke survives focus/DPI failure. Screen clicks do not."""
     try:
         el.invoke()
         return True, "invoke"
     except Exception as e:
-        print("[whatsapp_call] invoke fail (" + str(e)[:50] + ") - click_input try")
-    try:
-        el.click_input()
-        return True, "click_input"
-    except Exception as e:
-        return False, "click fail: " + str(e)[:60]
-
-
-def _wa_focus_call_window():
-    try:
-        w = _wa_gw_window()
-        if w is not None:
-            if getattr(w, "isMinimized", False):
-                w.restore()
-            w.activate()
-            return "WhatsApp activated"
-    except Exception as e:
-        print("[whatsapp_call] focus fail: " + str(e)[:60])
-    try:
-        import app_control
-        return str(app_control.focus_window("WhatsApp"))
-    except Exception:
-        return "WhatsApp focus unavailable"
+        _wa_diagnostic("invoke fail; guarded click_input fallback", e)
+    with _wa_physical_pixels("UIA click_input") as ready:
+        if not ready:
+            return False, "click_input blocked: DPI unavailable"
+        try:
+            window = _wa_screen_window(el)
+            rect = _wa_el_rect(el)
+            if not rect or not _wa_point_in_rect(
+                    _wa_screen_rect(window), (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2):
+                return False, "click_input blocked: invalid/out-of-window bounds"
+            if not _wa_screen_click_allowed("UIA click_input", window):
+                return False, "click_input blocked: foreground unverified"
+            el.click_input()
+            return True, "click_input"
+        except Exception as e:
+            _wa_diagnostic("UIA click_input fail", e)
+            return False, "click fail: " + str(e)[:100]
 
 
 def _wa_click_call_button_ui(video=False):
-    """Layer 1: STRICT UIA candidates me se top-3 click.
-    Returns note (str) on success, warna None. FUZZY click nahi karta."""
+    """Layer 1: up to three DISTINCT strict UIA controls, never fuzzy matches."""
     try:
         import ui_agent
     except Exception as e:
-        print("[whatsapp_call] ui_agent unavailable: " + str(e)[:60])
+        _wa_diagnostic("ui_agent unavailable", e)
         return None
     if getattr(ui_agent, "IS_WIN", False) is not True:
         return None
@@ -1000,69 +1253,115 @@ def _wa_click_call_button_ui(video=False):
     return None
 
 
+def _wa_guarded_vision_click(target):
+    # A VLM request can take seconds: locate ONLY, then recheck the foreground
+    # and window bounds before consuming its coordinates. OCR still verifies
+    # call state in the caller; a dry-run/find result is never reported as a click.
+    with _wa_physical_pixels("vision click") as ready:
+        if not ready:
+            return None
+        try:
+            window = _wa_screen_window()
+            if not _wa_screen_click_allowed("vision_click", window):
+                return None
+            rect = _wa_screen_rect(window)
+            if not rect:
+                print("[whatsapp_call] vision_click BLOCKED: window bounds unavailable")
+                return None
+            import vision_agent
+            res = vision_agent.vision_click(target, dry_run=True, use_active_window=True)
+            if not isinstance(res, dict) or not res.get("ok"):
+                print("[whatsapp_call] vision click miss: " + str(res)[:100])
+                return None
+            x, y = int(res["x"]), int(res["y"])
+            import pyautogui
+            if rect != _wa_screen_rect(window) or not _wa_point_in_rect(rect, x, y):
+                print("[whatsapp_call] vision_click BLOCKED: moved window/out-of-window coords")
+                return None
+            if not _wa_screen_click_allowed("vision_click final click", window):
+                return None
+            pyautogui.click(x, y)
+            return "vision_click (%d,%d)" % (x, y)
+        except Exception as e:
+            _wa_diagnostic("vision_click fail", e)
+            return None
+
+
 def _wa_click_call_button_vision(video=False):
-    """Layer 2: VLM vision_click (active window = WhatsApp).
-    Returns note (str) on success, warna None."""
-    try:
-        import vision_agent
-    except Exception as e:
-        print("[whatsapp_call] vision_agent unavailable: " + str(e)[:60])
-        return None
-    target = _WA_CALL_VISION_TARGETS[bool(video)]
-    try:
-        res = vision_agent.vision_click(target, dry_run=False, use_active_window=True)
-    except Exception as e:
-        print("[whatsapp_call] vision_click fail: " + str(e)[:70])
-        return None
-    if isinstance(res, dict) and res.get("ok"):
-        note = "vision_click (%s,%s)" % (res.get("x"), res.get("y"))
-        if res.get("verified"):
-            note += " screen change verify hua"
-        print("[whatsapp_call] vision click OK: " + note)
-        return note
-    print("[whatsapp_call] vision click miss: " + str(res)[:80])
-    return None
+    """Layer 2: verified-foreground, physical-pixel VLM locate + guarded click."""
+    return _wa_guarded_vision_click(_WA_CALL_VISION_TARGETS[bool(video)])
+
+
+def _wa_offset_click(off, end_call=False):
+    with _wa_physical_pixels("configured coords") as ready:
+        if not ready:
+            return None
+        try:
+            import pyautogui
+            w = _wa_gw_window()
+            rect = _wa_gw_rect(w)
+            if not rect:
+                print("[whatsapp_call] coords BLOCKED: WhatsApp bounds unavailable")
+                return None
+            l, t, r, b = rect
+            xoff, yoff = int(off[0]), int(off[1])
+            x, y = (l + xoff, b - yoff) if end_call else (r - xoff, t + yoff)
+            if (l < 0 or t < 0 or r - l < 100 or b - t < 100
+                    or xoff < 0 or yoff < 0 or not _wa_point_in_rect(rect, x, y)):
+                print("[whatsapp_call] coords BLOCKED: invalid offsets/window bounds")
+                return None
+            if not _wa_screen_click_allowed("configured coords", w):
+                return None
+            pyautogui.click(x, y)
+            note = "coords click (%d,%d) offset=%dx%d" % (x, y, xoff, yoff)
+            print("[whatsapp_call] " + note)
+            return note
+        except Exception as e:
+            _wa_diagnostic("coords fallback fail", e)
+            return None
+
+
+def _wa_web_search_click(window, xy, pyautogui):
+    """Shared chat-open path: never mix logical GW bounds with screen pixels."""
+    with _wa_physical_pixels("web search coords") as ready:
+        if not ready:
+            return False
+        try:
+            rect = _wa_gw_rect(window)
+            if not rect:
+                return False
+            if xy is not None:
+                if not isinstance(xy, (tuple, list)) or len(xy) != 2:
+                    return False
+                x, y = int(xy[0]), int(xy[1])
+            else:
+                x, y = rect[0] + 150, rect[1] + 130
+            if not _wa_point_in_rect(rect, x, y):
+                print("[whatsapp_call] web search coords BLOCKED: out-of-window bounds")
+                return False
+            if not _wa_screen_click_allowed("web search coords", window):
+                return False
+            pyautogui.click(x, y)
+            return True
+        except Exception as e:
+            _wa_diagnostic("web search coords fail; keyboard fallback", e)
+            return False
 
 
 def _wa_call_fallback_xy(video=False):
-    """Layer 3 (last resort): comms_config.json ke wa_call_button_offsets se
-    window-relative coords click.
-
-    Config: {"wa_call_button_offsets": {"voice": [x_from_right, y_from_top],
-                                        "video": [x_from_right, y_from_top]}}
-
-    DEFAULT DISABLED - offset config me likha nahi hai to kuch nahi karta
-    (None), warna galat jagah click hone ka khatra hai.
-    """
+    """Layer 3: explicitly configured [x_from_right, y_from_top], default OFF."""
     try:
         cfg = _load_json(CONFIG_PATH) or {}
-        offs = cfg.get("wa_call_button_offsets") or {}
         key = "video" if video else "voice"
-        off = offs.get(key)
-        if not off or len(off) != 2:
+        off = (cfg.get("wa_call_button_offsets") or {}).get(key)
+        if not isinstance(off, (list, tuple)) or len(off) != 2:
             print("[whatsapp_call] coords fallback DISABLED "
-                  "(wa_call_button_offsets." + key + " missing)")
+                  "(wa_call_button_offsets." + key + " missing/invalid)")
             return None
-        x_from_right, y_from_top = int(off[0]), int(off[1])
+        return _wa_offset_click(off)
     except Exception as e:
-        print("[whatsapp_call] coords config fail: " + str(e)[:60])
+        _wa_diagnostic("coords config fail", e)
         return None
-    try:
-        w = _wa_gw_window()
-        x = int(w.left) + int(w.width) - x_from_right
-        y = int(w.top) + y_from_top
-    except Exception as e:
-        print("[whatsapp_call] coords window fail: " + str(e)[:60])
-        return None
-    try:
-        import pyautogui
-        pyautogui.click(x, y)
-    except Exception as e:
-        print("[whatsapp_call] coords click fail: " + str(e)[:60])
-        return None
-    note = "coords click (%d,%d) offset=%dx%d" % (x, y, x_from_right, y_from_top)
-    print("[whatsapp_call] " + note)
-    return note
 
 
 def _wa_call_state_note(video=False, wait=None):
@@ -1078,39 +1377,42 @@ def _wa_call_state_note(video=False, wait=None):
     """
     if wait is None:
         wait = WA_CALL_STATE_WAIT_SEC
-    try:
-        if wait:
-            time.sleep(wait)
-        import vision_control
-    except Exception as e:
-        print("[whatsapp_call] verify skip (ocr unavailable): " + str(e)[:60])
-        return WA_CALL_UNKNOWN, "ocr unavailable"
-    text_seen = False
-    for mode, region in _wa_ocr_regions():
+    with _wa_physical_pixels("call-state OCR") as ready:
+        if not ready:
+            return WA_CALL_UNKNOWN, "DPI context unavailable; OCR skipped"
         try:
-            t = str(_wa_ocr_read(mode, region) or "")
+            if wait:
+                time.sleep(wait)
+            import vision_control
         except Exception as e:
-            print("[whatsapp_call] ocr '%s' fail: %s" % (mode, str(e)[:50]))
-            continue
-        if not t or _WA_OCR_EMPTY_MARK in t.lower():
-            continue
-        marker = _wa_ocr_is_terminal(t)
-        if marker:
-            print("[whatsapp_call] OCR DISCARD [%s]: terminal marker %r" % (mode, marker))
-            continue
-        text_seen = True
-        low = t.lower()
-        for hint in _WA_CALL_SCREEN_HINTS:
-            if hint in low:
-                print("[whatsapp_call] verify OK: '%s' dikha (%s window)" % (hint, mode))
-                return WA_CALL_DETECTED, hint
-        # Active window me hint nahi mila to full screen bhi dekho - WhatsApp
-        # ki calling screen aksar ALAG window hoti hai, chat window me nahi.
-    if not text_seen:
-        print("[whatsapp_call] verify: ocr ne text nahi diya - confirm nahi kar sakte")
-        return WA_CALL_UNKNOWN, "ocr ne text nahi diya"
-    print("[whatsapp_call] verify MISS: call screen ka koi hint nahi")
-    return WA_CALL_ABSENT, "no call-screen text"
+            print("[whatsapp_call] verify skip (ocr unavailable): " + str(e)[:60])
+            return WA_CALL_UNKNOWN, "ocr unavailable"
+        text_seen = False
+        for mode, region in _wa_ocr_regions():
+            try:
+                t = str(_wa_ocr_read(mode, region) or "")
+            except Exception as e:
+                print("[whatsapp_call] ocr '%s' fail: %s" % (mode, str(e)[:50]))
+                continue
+            if not t or _WA_OCR_EMPTY_MARK in t.lower():
+                continue
+            marker = _wa_ocr_is_terminal(t)
+            if marker:
+                print("[whatsapp_call] OCR DISCARD [%s]: terminal marker %r" % (mode, marker))
+                continue
+            text_seen = True
+            low = t.lower()
+            for hint in _WA_CALL_SCREEN_HINTS:
+                if hint in low:
+                    print("[whatsapp_call] verify OK: '%s' dikha (%s window)" % (hint, mode))
+                    return WA_CALL_DETECTED, hint
+            # Active window me hint nahi mila to full screen bhi dekho - WhatsApp
+            # ki calling screen aksar ALAG window hoti hai, chat window me nahi.
+        if not text_seen:
+            print("[whatsapp_call] verify: ocr ne text nahi diya - confirm nahi kar sakte")
+            return WA_CALL_UNKNOWN, "ocr ne text nahi diya"
+        print("[whatsapp_call] verify MISS: call screen ka koi hint nahi")
+        return WA_CALL_ABSENT, "no call-screen text"
 
 
 def _wa_call_already_active(video=False):
@@ -1124,46 +1426,37 @@ def _wa_call_already_active(video=False):
 
 
 def _wa_call_probe(video=False, end_call=False):
-    """Debug dump - kuch click NAHI karta.
-    Chalao: python comms_agent.py [--video] --call-probe
-    Output Boss bhejta hai, phir weights/offsets tune hote hain."""
-    _wa_focus_call_window()
+    """Compact, no-click diagnostics. One descendants snapshot, no weight tuning."""
+    focus = _wa_focus_call_window()
     kind = "end call" if end_call else ("video call" if video else "voice call")
-    lines = ["=== whatsapp_call probe (%s) ===" % kind]
+    lines = ["=== whatsapp_call probe (%s) ===" % kind, "focus-result: " + focus]
     try:
         import ui_agent
         lines.append("ui_agent IS_WIN: %s" % getattr(ui_agent, "IS_WIN", None))
-    except Exception as e:
-        lines.append("ui_agent import fail: " + str(e)[:60])
-    try:
-        for score, title, rect, _ in _wa_uia_window_candidates():
+        windows = _wa_uia_window_candidates()
+        lines.append("UIA windows: %d (showing at most %d)" % (len(windows), _WA_PROBE_LIMIT))
+        for score, title, rect, _ in windows[:_WA_PROBE_LIMIT]:
             lines.append("window score=%d title=%r rect=%s" % (score, title, rect))
-        w = _wa_uia_window()
-        lines.append("descendants count: %d" % (len(w.descendants()) if w is not None else 0))
-        lines.extend("near-miss name=%r type=%s rect=%s" % item for item in _wa_near_miss_names(w))
-        lines.append("whatsapp uia window: " + ("mila" if w is not None else "NAHI mila"))
-        lines.append("window rect: %s" % str(_wa_el_rect(w) if w else None))
-        cands = (_wa_uia_end_call_candidates() if end_call
-                 else _wa_uia_call_candidates(video, dump=True))
-        lines.append("STRICT candidates: %d (strict candidates)" % len(cands))
-        for score, name, ctype, _el in cands[:10]:
-            lines.append("  score=%2d  type=%-10s  name=%r" % (score, ctype or "?", name))
-        lines.append("name weights: %s" % str(_wa_call_name_weights(video)))
-        lines.append("bad words: %s" % str(list(_WA_CALL_BAD_NAME_WORDS)))
+        w = windows[0][3] if windows else _wa_uia_window()
+        lines.extend(_wa_scan_lines(_wa_scan_call_controls(w, video, end_call)))
     except Exception as e:
-        lines.append("candidate scan fail: " + str(e)[:80])
-    try:
-        import vision_control
-        for mode, region in _wa_ocr_regions():
-            try:
-                txt = " ".join(str(_wa_ocr_read(mode, region) or "").split())
-                marker = _wa_ocr_is_terminal(txt)
-                lines.append("ocr[%s]%s: %s" % (mode,
-                    " DISCARD terminal=" + marker if marker else "", txt[:200] or "(khaali)"))
-            except Exception as e:
-                lines.append("ocr[%s] unavailable: %s" % (mode, e))
-    except Exception as e:
-        lines.append("ocr unavailable: " + str(e)[:80])
+        _wa_diagnostic("probe candidate scan fail", e)
+        lines.append("candidate scan fail: " + str(e)[:160])
+    weights = _WA_END_CALL_UI_NAME_WEIGHTS if end_call else _wa_call_name_weights(video)
+    bad_words = _WA_END_CALL_BAD_NAME_WORDS if end_call else _WA_CALL_BAD_NAME_WORDS
+    lines.append("%s name weights: %s" % ("END-call" if end_call else "call", weights))
+    lines.append("%s bad words: %s" % ("END-call" if end_call else "call", list(bad_words)))
+    with _wa_physical_pixels("probe OCR") as ready:
+        lines.append("screen DPI: " + ("physical-pixel context ready" if ready else "UNAVAILABLE; OCR skipped"))
+        if ready:
+            for mode, region in _wa_ocr_regions():
+                try:
+                    txt = " ".join(str(_wa_ocr_read(mode, region) or "").split())
+                    marker = _wa_ocr_is_terminal(txt)
+                    lines.append("ocr[%s]%s: %s" % (mode,
+                        " DISCARD terminal=" + marker if marker else "", txt[:200] or "(khaali)"))
+                except Exception as e:
+                    lines.append("ocr[%s] unavailable: %s" % (mode, str(e)[:160]))
     state, hint = _wa_call_state_note(video, wait=0)
     lines.append("call state: %s (%s)" % (state, hint))
     cfg = _load_json(CONFIG_PATH) or {}
@@ -1190,32 +1483,15 @@ _WA_END_CALL_VISION_TARGET = (
 
 
 def _wa_near_miss_names(window=None):
-    words = ("call", "video", "voice", "audio", "phone", "handset", "camera",
-             "hang", "decline", "reject")
     w = window if window is not None else _wa_uia_window()
-    try:
-        return [(_wa_el_name(el), _wa_el_type(el), _wa_el_rect(el))
-                for el in w.descendants()
-                if any(word in _wa_el_name(el).lower() for word in words)]
-    except Exception:
-        return []
+    return _wa_scan_call_controls(w)["near_misses"]
 
 
 def _wa_uia_end_call_candidates(dump=False):
-    try:
-        descs = _wa_uia_window().descendants()
-    except Exception:
-        return []
-    out = []
-    for el in descs:
-        name, ctype = _wa_el_name(el), _wa_el_type(el)
-        low = name.lower()
-        if low not in _WA_END_CALL_UI_NAME_WEIGHTS or any(
-                bad in low for bad in _WA_END_CALL_BAD_NAME_WORDS):
-            continue
-        score = _WA_END_CALL_UI_NAME_WEIGHTS[low] * 2 + (3 if ctype == "button" else 0)
-        out.append((score, name, ctype, el))
-    return sorted(out, key=lambda c: (-c[0], c[1].lower()))
+    scan = _wa_scan_call_controls(_wa_uia_window(), end_call=True)
+    if dump:
+        print("\n".join(_wa_scan_lines(scan)))
+    return scan["candidates"]
 
 
 def _wa_click_end_call_button_ui():
@@ -1223,32 +1499,26 @@ def _wa_click_end_call_button_ui():
         ok, how = _wa_uia_click(el)
         if ok:
             return "uia %s %s" % (how, name)
+        print("[whatsapp_call] end-call UIA click fail %r: %s" % (name, how))
     return None
 
 
 def _wa_click_end_call_button_vision():
-    import vision_agent
-    res = vision_agent.vision_click(_WA_END_CALL_VISION_TARGET,
-                                   dry_run=False, use_active_window=True)
-    if isinstance(res, dict) and res.get("ok"):
-        return "vision_click"
-    return None
+    return _wa_guarded_vision_click(_WA_END_CALL_VISION_TARGET)
 
 
 def _wa_end_call_fallback_xy():
-    cfg = _load_json(CONFIG_PATH) or {}
-    off = cfg.get("wa_end_call_button_offsets")
-    if not isinstance(off, (list, tuple)) or len(off) != 2:
-        return None  # DEFAULT DISABLED
-    w = _wa_gw_window()
-    if w is None:
+    """Explicit [x_from_left, y_from_bottom] offsets, default OFF."""
+    try:
+        cfg = _load_json(CONFIG_PATH) or {}
+        off = cfg.get("wa_end_call_button_offsets")
+        if not isinstance(off, (list, tuple)) or len(off) != 2:
+            print("[whatsapp_call] end-call coords fallback DISABLED (missing/invalid offsets)")
+            return None
+        return _wa_offset_click(off, end_call=True)
+    except Exception as e:
+        _wa_diagnostic("end-call coords config fail", e)
         return None
-    xoff, yoff = int(off[0]), int(off[1])
-    if not (w.left >= 0 and w.top >= 0 and 0 <= xoff < w.width and 0 <= yoff < w.height):
-        return None
-    import pyautogui
-    pyautogui.click(int(w.left) + xoff, int(w.top + w.height) - yoff)
-    return "coords click"
 
 
 def _wa_end_call_probe():

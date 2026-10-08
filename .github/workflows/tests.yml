@@ -12,7 +12,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.14"]
 
     steps:
     - name: Checkout code
@@ -41,6 +41,7 @@ jobs:
         python -m py_compile policy.py
         python -m py_compile agent_state.py
         python -m py_compile verifier.py
+        python -m py_compile comms_agent.py qa_report.py
 
     - name: Run pytest
       run: python -m pytest tests/ -v --tb=short
