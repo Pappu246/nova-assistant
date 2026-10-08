@@ -58,6 +58,10 @@ Offline tests replay the reported coordinates and duplicate wrappers. Native
 Windows CI tests check DPI scope nesting, exception restoration, unchanged
 process awareness and isolation between threads, including on Python 3.14.
 They do **not** make live calls or validate a real 150%-scaled WhatsApp desktop.
+Process-default checks use `GetDpiAwarenessContextForProcess` with an explicit
+process handle: the legacy `GetProcessDpiAwareness(NULL)` query is documented to
+reflect the current thread, so it intentionally reports per-monitor awareness
+inside the scope and cannot prove whether the process default changed.
 
 After updating the local checkout, keep the desired WhatsApp chat open and run
 from the repo directory (each command starts a fresh Python process):

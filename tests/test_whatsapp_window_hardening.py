@@ -456,17 +456,23 @@ def test_windows_native_dpi_scope_restores_after_exception():
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='native Windows thread DPI API')
 def test_windows_native_dpi_does_not_change_process_default():
-    shcore = ctypes.WinDLL('shcore', use_last_error=True)
-    get_process = shcore.GetProcessDpiAwareness
-    get_process.argtypes, get_process.restype = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)], ctypes.c_long
-    def process_awareness():
-        value = ctypes.c_int()
-        assert get_process(None, ctypes.byref(value)) == 0
-        return value.value
-    before = process_awareness()
+    # GetProcessDpiAwareness(NULL) is documented as equivalent to querying
+    # GetThreadDpiAwarenessContext: it SHOULD change inside a thread override.
+    # Use the process-specific context API, not that legacy thread-sensitive API.
+    get, equal, awareness = _native_dpi_functions()
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    current_process = kernel32.GetCurrentProcess
+    current_process.argtypes, current_process.restype = [], ctypes.c_void_p
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    process_context = user32.GetDpiAwarenessContextForProcess
+    process_context.argtypes, process_context.restype = [ctypes.c_void_p], ctypes.c_void_p
+    process = current_process()
+    before = process_context(process)
+    assert before
     with c._wa_physical_pixels('native process check') as ready:
-        assert ready and process_awareness() == before
-    assert process_awareness() == before
+        assert ready and awareness(get()) == 2
+        assert equal(process_context(process), before)
+    assert equal(process_context(process), before)
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='native Windows thread DPI API')
