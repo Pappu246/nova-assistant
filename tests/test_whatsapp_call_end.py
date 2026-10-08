@@ -47,6 +47,7 @@ def test_gw_select_restore_activate(monkeypatch):
                            activate=lambda: log.append('activate'))
     monkeypatch.setitem(sys.modules, 'pygetwindow', SimpleNamespace(
         getWindowsWithTitle=lambda _: [hidden, real]))
+    monkeypatch.setattr(c, '_wa_foreground_info', lambda: (None, 'WhatsApp'))
     assert c._wa_gw_window() is real
     c._wa_focus_call_window()
     assert log == ['restore', 'activate']
@@ -120,9 +121,10 @@ def test_coords_disabled_and_configured(monkeypatch):
     monkeypatch.setattr(c, '_load_json', lambda _: {})
     assert c._wa_end_call_fallback_xy() is None
     monkeypatch.setattr(c, '_load_json', lambda _: {'wa_end_call_button_offsets': [500, 60]})
-    monkeypatch.setattr(c, '_wa_gw_window', lambda: SimpleNamespace(left=10, top=20, width=1000, height=800))
+    monkeypatch.setattr(c, '_wa_gw_window', lambda: SimpleNamespace(title='WhatsApp', _hWnd=197, left=10, top=20, width=1000, height=800))
     calls = []
     monkeypatch.setitem(sys.modules, 'pyautogui', SimpleNamespace(click=lambda *xy: calls.append(xy)))
+    monkeypatch.setattr(c, '_wa_foreground_info', lambda: (197, 'WhatsApp'))
     assert c._wa_end_call_fallback_xy()
     assert calls == [(510, 760)]
 
@@ -141,3 +143,33 @@ def test_end_tool_wiring():
     assert 'whatsapp_call_end' in think.TOOL_SPECS
     assert 'whatsapp_call_end' in planner.TOOL_SCHEMAS
     assert verifier._SUCCESS_HINTS['whatsapp_call_end'] == ['whatsapp call kaat di']
+
+
+@pytest.mark.parametrize('runtime_id', [None, (42, 197, 1)])
+def test_end_call_79_repeated_wrappers_are_one_candidate(monkeypatch, runtime_id):
+    els = [_FakeEl(str(i), 'End call', 'Button', (500, 700, 550, 750)) for i in range(79)]
+    for el in els:
+        el.element_info.runtime_id = runtime_id
+    win = _FakeUIAWindow(els)
+    monkeypatch.setattr(c, '_wa_uia_window', lambda: win)
+    assert len(c._wa_uia_end_call_candidates()) == 1
+    scan = c._wa_scan_call_controls(win, end_call=True)
+    assert scan['raw'] == 79 and scan['candidates'][0][0] == 9
+
+
+def test_failed_duplicate_end_control_is_not_retried(monkeypatch):
+    from tests.test_whatsapp_call import _install_uia
+    calls = []
+    els = [_FakeEl(str(i), 'End call', 'Button', (500, 700, 550, 750)) for i in range(79)]
+    def fail_invoke():
+        calls.append('failed invoke')
+        raise RuntimeError('stale control')
+    def fail_click():
+        calls.append('failed click_input')
+        raise RuntimeError('stale control')
+    for el in els:
+        el.invoke, el.click_input = fail_invoke, fail_click
+    good = _FakeEl('other', 'Hang up', 'Button', (600, 700, 650, 750), calls)
+    _install_uia(monkeypatch, els + [good])
+    assert c._wa_click_end_call_button_ui()
+    assert calls == ['failed invoke', 'failed click_input', ('invoke', 'other')]

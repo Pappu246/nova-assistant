@@ -11,8 +11,9 @@ jobs:
   test:
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.14"]
 
     steps:
     - name: Checkout code
@@ -41,8 +42,26 @@ jobs:
         python -m py_compile policy.py
         python -m py_compile agent_state.py
         python -m py_compile verifier.py
+        python -m py_compile comms_agent.py qa_report.py
 
     - name: Run pytest
-      run: python -m pytest tests/ -v --tb=short
+      run: python -m pytest tests/ -v --tb=short --junitxml=.pytest_cache/results.xml
       env:
         NOVA_ALLOW_ANY: "1"
+
+    - name: Annotate pytest failures
+      if: failure()
+      shell: python
+      run: |
+        import pathlib
+        import xml.etree.ElementTree as ET
+        report = pathlib.Path(".pytest_cache/results.xml")
+        if report.exists():
+            def escape(text):
+                return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+            for case in ET.parse(report).iter("testcase"):
+                for tag in ("failure", "error"):
+                    for failure in case.findall(tag):
+                        name = case.get("classname", "") + "." + case.get("name", "")
+                        detail = name + "\n" + (failure.text or failure.get("message", ""))
+                        print("::error::" + escape(detail[:8000]))

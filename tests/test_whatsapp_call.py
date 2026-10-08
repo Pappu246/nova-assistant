@@ -55,6 +55,7 @@ class _FakeWindow:
     def __init__(self, log):
         self.log = log
         self.title = "WhatsApp"
+        self._hWnd = 197
         self.left = 0
         self.top = 0
         self.width = 1000
@@ -78,6 +79,9 @@ class _FakeGW:
     def getWindowsWithTitle(self, title):
         return [_FakeWindow(self.log)]
 
+    def getActiveWindow(self):
+        return _FakeWindow(self.log)
+
 
 class _FakeClipboard:
     def __init__(self, log):
@@ -94,6 +98,7 @@ def _install_fakes(monkeypatch):
     monkeypatch.setitem(sys.modules, "pyautogui", pg)
     monkeypatch.setitem(sys.modules, "pygetwindow", _FakeGW(log))
     monkeypatch.setitem(sys.modules, "pyperclip", _FakeClipboard(log))
+    monkeypatch.setattr(comms_agent, "_wa_foreground_info", lambda: (197, "WhatsApp"))
     monkeypatch.setattr(comms_agent.time, "sleep", lambda *_: None)
     monkeypatch.setattr(comms_agent, "_wa_desktop_installed", lambda: True)
     monkeypatch.setattr(comms_agent, "WA_CALL_STATE_WAIT_SEC", 0)
@@ -151,7 +156,11 @@ class _FakeUIAWindow:
     def __init__(self, descendants, rect=(0, 0, 1000, 800)):
         self._desc = descendants
         self.element_info = _FakeElInfo("WhatsApp", "Window")
+        self.handle = 197
         self._rect = _FakeRect(*rect)
+
+    def window_text(self):
+        return "WhatsApp"
 
     def descendants(self):
         return self._desc
@@ -164,6 +173,9 @@ def _install_uia(monkeypatch, descendants, is_win=True):
     """comms_agent._wa_uia_window ko fake WhatsApp window dedo."""
     win = _FakeUIAWindow(descendants)
     monkeypatch.setattr(comms_agent, "_wa_uia_window", lambda: win)
+    monkeypatch.setattr(comms_agent, "_wa_foreground_info", lambda: (197, "WhatsApp"))
+    for el in descendants:
+        el.top_level_parent = lambda: win
     try:
         import ui_agent
         monkeypatch.setattr(ui_agent, "IS_WIN", is_win, raising=False)
@@ -673,6 +685,7 @@ def test_vision_targets_exclude_chat_text():
 
 
 def test_vision_layer_uses_active_window(monkeypatch):
+    log = _install_fakes(monkeypatch)
     seen = {}
 
     class _VA:
@@ -683,7 +696,9 @@ def test_vision_layer_uses_active_window(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "vision_agent", _VA)
     note = comms_agent._wa_click_call_button_vision(False)
-    assert note and seen["dry_run"] is False and seen["uaw"] is True, seen
+    # Locate only; the comms guard rechecks foreground before the real click.
+    assert note and seen["dry_run"] is True and seen["uaw"] is True, seen
+    assert [item for item in log if item[0] == "click"] == [("click", 900, 60)]
 
 
 def test_probe_dumps_without_clicking(monkeypatch):
@@ -952,3 +967,64 @@ def test_rt_brain_nahi_pe_call_cancel(monkeypatch):
     assert not executed
     assert out and "cancel" in out[-1].lower(), str(out)
     assert policy.get_pending() is None
+
+
+@pytest.mark.parametrize('video,name,rect', [
+    (False, 'Voice call', (1578, 101, 1660, 183)),
+    (True, 'Video call', (1465, 101, 1547, 183)),
+])
+@pytest.mark.parametrize('runtime_id', [None, (42, 197, 1)])
+def test_real_windows_79_repeated_wrappers_are_one_candidate(monkeypatch, video, name, rect, runtime_id):
+    els = [_FakeEl(str(i), name, 'Button', rect) for i in range(79)]
+    for el in els:
+        el.element_info.runtime_id = runtime_id
+    els += [_FakeEl('history1', 'Voice call Accepted on another device 11:09 am'),
+            _FakeEl('history2', 'Video call 2 minutes 12:18 am')]
+    win = _install_uia(monkeypatch, els)
+    win._rect = _FakeRect(951, 0, 1929, 1137)
+    scan = comms_agent._wa_scan_call_controls(win, video=video)
+    assert scan['raw'] == 79 and scan['descendants'] == 81
+    assert len(scan['candidates']) == 1
+    assert scan['candidates'][0][:3] == (14, name, 'button')
+    assert len(scan['near_misses']) == 2
+    assert comms_agent._wa_win_score('WhatsApp', (951, 0, 1929, 1137)) == 197
+
+
+def test_failed_duplicate_call_control_is_not_retried(monkeypatch):
+    log = []
+    duplicates = [_FakeEl(str(i), 'Voice call', 'Button', (900, 60, 940, 100), log)
+                  for i in range(79)]
+    def fail_invoke():
+        log.append('failed invoke')
+        raise RuntimeError('dead control')
+    def fail_click():
+        log.append('failed click_input')
+        raise RuntimeError('dead control')
+    for el in duplicates:
+        el.element_info.runtime_id = (1, 197)
+        el.invoke, el.click_input = fail_invoke, fail_click
+    # Same geometry, DISTINCT runtime ID: must survive dedup and get attempted.
+    good = _FakeEl('second', 'Voice call', 'Button', (900, 60, 940, 100), log)
+    good.element_info.runtime_id = (2, 197)
+    _install_uia(monkeypatch, duplicates + [good])
+    monkeypatch.setattr(comms_agent, '_wa_focus_call_window', lambda: 'test focus')
+    monkeypatch.setattr(comms_agent.time, 'sleep', lambda *_: None)
+    assert comms_agent._wa_click_call_button_ui()
+    assert log == ['failed invoke', 'failed click_input', ('invoke', 'second')]
+
+
+def test_chat_open_unverified_foreground_never_types(monkeypatch):
+    log = _install_fakes(monkeypatch)
+    monkeypatch.setattr(comms_agent, '_wa_foreground_info', lambda: (999, 'Terminal'))
+    ok, note = comms_agent._wa_open_chat_and_run('Test Contact')
+    assert not ok and 'foreground unverified' in note
+    assert not [event for event in log if event[0] in ('hotkey', 'press', 'click', 'copy')]
+
+
+def test_chat_open_activate_exception_can_still_be_verified(monkeypatch):
+    log = _install_fakes(monkeypatch)
+    def fail(self):
+        raise RuntimeError('Error code from Windows: 0')
+    monkeypatch.setattr(_FakeWindow, 'activate', fail)
+    assert comms_agent._wa_open_chat_and_run('Test Contact') == (True, 'desktop')
+    assert ('hotkey', ('ctrl', 'f')) in log

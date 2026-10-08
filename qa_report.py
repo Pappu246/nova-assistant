@@ -471,6 +471,43 @@ def x_wa_window_ocr_guard():
     return "minimized sentinel scoring + terminal discard"
 
 
+def x_wa_window_hardening():
+    """Offline evidence replay; never focus WhatsApp or make a real click."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace as NS
+    from unittest.mock import patch
+    import comms_agent as c
+
+    rect = NS(left=1465, top=101, right=1547, bottom=183)
+    def control(runtime_id, name="Video call"):
+        return NS(element_info=NS(name=name, control_type="Button", runtime_id=runtime_id),
+                  rectangle=lambda: rect, invoke=lambda: None)
+    els = [control((197, 1)) for _ in range(79)]
+    history = [control(None, "Video call 2 minutes 12:18 am"),
+               control(None, "Voice call Accepted on another device 11:09 am")]
+    win = NS(rectangle=lambda: NS(left=951, top=0, right=1929, bottom=1137),
+             descendants=lambda: els + history)
+    with patch.object(c, "_load_json", return_value={}):
+        scan = c._wa_scan_call_controls(win, video=True)
+    assert scan["raw"] == 79 and len(scan["candidates"]) == 1
+    assert scan["candidates"][0][0] == 14 and scan["near_miss_count"] == 2
+    els.append(control((197, 2)))  # same rect but a DISTINCT RuntimeId
+    with patch.object(c, "_load_json", return_value={}):
+        assert len(c._wa_scan_call_controls(win, video=True)["candidates"]) == 2
+    for el in els:
+        el.element_info.name = "End call"
+    assert len(c._wa_scan_call_controls(win, end_call=True)["candidates"]) == 2
+    with patch.object(c, "_wa_foreground_info", return_value=(198, "WhatsApp")):
+        assert not c._wa_foreground_status(NS(_hWnd=197, title="WhatsApp"))[0]
+    with patch.object(c, "_wa_physical_pixels", side_effect=lambda _: nullcontext(False)):
+        assert c._wa_uia_click(els[0]) == (True, "invoke")
+        assert c._wa_click_call_button_vision() is None
+        assert c._wa_click_end_call_button_vision() is None
+        assert c._wa_offset_click([80, 70]) is None
+        assert c._wa_call_state_note(wait=0)[0] == c.WA_CALL_UNKNOWN
+    return "79->1; distinct IDs; focus/DPI fail-closed; invoke preserved"
+
+
 def x_wa_end_wiring():
     import comms_agent as c
     import policy, tools, think, planner, verifier
@@ -534,6 +571,7 @@ def main():
         ("Call Fix", "stale pending + 180s TTL", x_confirmation_guard, False),
         ("Call Fix", "crash resilience", x_crash_resilience, False),
         ("Call Fix", "window + OCR leakage", x_wa_window_ocr_guard, False),
+        ("Call Fix", "dedup + foreground/DPI guards", x_wa_window_hardening, False),
         ("Call End", "safe tool wiring", x_wa_end_wiring, False),
         ("Barge-in", "echo tuning", x_barge_tuning, False),
         ("Wiring", "pytest suite", x_existing_tests, False),
