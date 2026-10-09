@@ -35,6 +35,84 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ================= FAKE AUTOMATION ENV =================
 
+class _FakeWA(list):
+    """Automation log PLUS a tiny WhatsApp Desktop model (search box, composer, header).
+
+    Ctrl+F / Ctrl+A / Backspace / Ctrl+V / Enter update the model the way the app
+    does, so chat-open, send and call flows run end-to-end offline. The flags
+    simulate real failure modes (search not cleared, paste lost, Enter ignored...).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.focus, self.selected = "list", False
+        self.search = self.composer = ""
+        self.header = "Ravi"          # chat already open before automation starts
+        self.clipboard = ""
+        self.results = {}             # typed text -> chat it opens (None = no result)
+        self.sent = []                # (chat, text) really sent
+        self.clear_fails = False      # Backspace leaves search text behind
+        self.paste_lands = True       # Ctrl+V reaches the search box
+        self.composer_paste_lands = True
+        self.enter_sends = True       # Enter in composer really sends
+        self.send_clears = True       # composer empties after a send
+        self.search_readable = True   # UIA Value pattern readable?
+        self.composer_readable = True
+        self.header_readable = True
+
+    def on_hotkey(self, keys):
+        keys = tuple(keys)
+        if keys == ("ctrl", "f"):
+            self._focus("search")
+        elif keys == ("ctrl", "a"):
+            self.selected = True
+        elif keys == ("ctrl", "v"):
+            if ((self.focus == "search" and self.paste_lands)
+                    or (self.focus == "composer" and self.composer_paste_lands)):
+                self._insert(self.clipboard)
+            self.selected = False
+
+    def on_press(self, key):
+        if key == "backspace":
+            if self.focus == "search" and not self.clear_fails:
+                self.search = "" if self.selected else self.search[:-1]
+            elif self.focus == "composer":
+                self.composer = "" if self.selected else self.composer[:-1]
+            self.selected = False
+        elif key == "enter":
+            if self.focus == "search":
+                chat = self.results.get(self.search, self.search) if self.search else None
+                if chat:
+                    self.header = chat
+                    self._focus("composer")
+            elif self.focus == "composer" and self.composer and self.enter_sends:
+                self.sent.append((self.header, self.composer))
+                if self.send_clears:
+                    self.composer = ""
+
+    def _focus(self, field):
+        self.focus, self.selected = field, False
+
+    def _insert(self, text):
+        if self.focus == "search":
+            self.search = text if self.selected else self.search + text
+        elif self.focus == "composer":
+            self.composer = text if self.selected else self.composer + text
+        self.selected = False
+
+    # UIA / OCR readers used by comms_agent (monkeypatched in _install_fakes)
+    def search_box_value(self):
+        return self.search if self.search_readable else None
+
+    def composer_text(self):
+        return self.composer if self.composer_readable else None
+
+    def header_check(self, target, window=None):
+        if not self.header_readable:
+            return False, "header unreadable"
+        return comms_agent._wa_name_matches(target, self.header), "header=%r" % self.header
+
+
 class _FakePG:
     def __init__(self, log):
         self.log = log
@@ -43,9 +121,11 @@ class _FakePG:
 
     def hotkey(self, *keys):
         self.log.append(("hotkey", tuple(keys)))
+        self.log.on_hotkey(keys)
 
     def press(self, key):
         self.log.append(("press", key))
+        self.log.on_press(key)
 
     def click(self, x=None, y=None):
         self.log.append(("click", x, y))
@@ -89,11 +169,15 @@ class _FakeClipboard:
 
     def copy(self, text):
         self.log.append(("copy", str(text)))
+        self.log.clipboard = str(text)
 
 
 def _install_fakes(monkeypatch):
-    """Fake pyautogui/pygetwindow/pyperclip + no-sleep. Returns shared log."""
-    log = []
+    """Fake pyautogui/pygetwindow/pyperclip + WhatsApp model + no-sleep.
+
+    Returns the shared _FakeWA (a list log; its attributes are the chat model).
+    """
+    log = _FakeWA()
     pg = _FakePG(log)
     monkeypatch.setitem(sys.modules, "pyautogui", pg)
     monkeypatch.setitem(sys.modules, "pygetwindow", _FakeGW(log))
@@ -103,6 +187,11 @@ def _install_fakes(monkeypatch):
     monkeypatch.setattr(comms_agent, "_wa_desktop_installed", lambda: True)
     monkeypatch.setattr(comms_agent, "WA_CALL_STATE_WAIT_SEC", 0)
     monkeypatch.setattr(comms_agent.os, "system", lambda *_: 0)
+    # No real UIA/OCR in the chat flows: the model answers for them.
+    monkeypatch.setattr(comms_agent, "_wa_uia_window", lambda: None)
+    monkeypatch.setattr(comms_agent, "_wa_search_box_value", log.search_box_value, raising=False)
+    monkeypatch.setattr(comms_agent, "_wa_composer_text", log.composer_text, raising=False)
+    monkeypatch.setattr(comms_agent, "_wa_chat_header_check", log.header_check, raising=False)
     return log
 
 
@@ -472,7 +561,8 @@ def test_honest_fail_when_verify_absent(monkeypatch):
 
     r = str(comms_agent.whatsapp_call({"contact": "Pinkesh"}))
     assert "nahi laga paya" in r and "fail" in r.lower(), r
-    assert "calling screen nahi aayi" in r, r
+    # 'absent' after a click is NOT success: it is only 'not verified'
+    assert "verify nahi hua" in r and "calling screen" in r, r
     assert "--call-probe" in r, r
     assert "laga diya" not in r, "jhoothi success bol diya: " + r
     ok, reason = verifier.verify({"tool": "whatsapp_call"}, r)
@@ -770,7 +860,8 @@ def test_call_without_contact_asks():
 def test_contact_naam_se_resolve_hota_hai(monkeypatch):
     """contacts.json se naam resolve + chat search naam se hi hota hai."""
     called = {}
-    _install_fakes(monkeypatch)
+    log = _install_fakes(monkeypatch)
+    log.header = "Pinkesh"  # chat header verify (call sirf target ki chat me lagta hai)
     _stub_no_active(monkeypatch)
     _stub_verify(monkeypatch, [(comms_agent.WA_CALL_DETECTED, "calling")])
     monkeypatch.setattr(comms_agent, "_resolve_contact", lambda n: ("9876543210", ""))

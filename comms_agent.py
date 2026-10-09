@@ -501,11 +501,292 @@ def _wa_activate(w):
     return _wa_foreground_status(w)[0]
 
 
+# ---- chat NAME verification (name path; message + call share it) ----
+# Open: Ctrl+F -> select-all + Backspace -> search box UIA value must be EMPTY ->
+# paste the name -> UIA value must equal the name -> Enter -> chat header must
+# EXACTLY match the name (UIA header band, then OCR of the same band). Anything
+# unverified returns WITHOUT Enter, typing or clicks. No Esc press here: the
+# global Esc listeners (bolo.py / rt_speak.py) would stop Nova's own speech.
+
+WA_CHAT_HEADER_UNVERIFIED = "header-unverified"     # header != target, or unreadable
+_WA_NOTE_TYPED = "typed"                           # text in the box, Enter not pressed
+_WA_NOTE_SEND_UNVERIFIED = "send verify nahi hua"  # Enter pressed, send not proven
+
+_WA_HEADER_TOP_RATIO = 0.16     # header band = top 16% of the window
+_WA_HEADER_LEFT_RATIO = 0.30    # chat pane starts after the chat list (~30% wide)
+_WA_HEADER_RIGHT_RATIO = 0.80   # call / video / menu buttons sit in the right ~20%
+_WA_SEARCH_TOP_RATIO = 0.25     # chat search box: top-left of the window
+_WA_SEARCH_RIGHT_RATIO = 0.45
+_WA_COMPOSER_TOP_RATIO = 0.75   # message composer: bottom quarter of the chat pane
+_WA_OCR_MIN_SIDE = 100          # smallest usable OCR box side (px)
+_WA_HEADER_TRIES = 4
+_WA_INPUT_TYPES = ("edit", "document")
+_WA_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u200e\u200f"
+                                       "\u202a\u202b\u202c\u202d\u202e"
+                                       "\u2066\u2067\u2068\u2069\ufeff"), None)
+
+
+def _wa_print(text):
+    """print() for WhatsApp diagnostics: a cp1252 console/pipe must never crash on
+    contact names, OCR text or emoji (the probe output used to crash there)."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(str(text).encode(enc, "backslashreplace").decode(enc, "replace"))
+
+
+def _wa_norm(text):
+    """Case, whitespace and invisible bidi marks (WhatsApp adds LRM/RLM) ignored."""
+    return " ".join(str(text or "").translate(_WA_INVISIBLE).split()).casefold()
+
+
+def _wa_digits(text):
+    return "".join(ch for ch in str(text or "") if ch.isdigit())
+
+
+def _wa_name_matches(target, shown):
+    """EXACT chat-name match after normalising case/whitespace. Number-like targets
+    compare the last 10 digits, so '+91 98765 43210' matches '9876543210'."""
+    want, got = _wa_norm(target), _wa_norm(shown)
+    if not want or not got:
+        return False
+    want_digits = _wa_digits(target)
+    if len(want_digits) >= 10 and not any(ch.isalpha() for ch in str(target)):
+        got_digits = _wa_digits(shown)
+        return len(got_digits) >= 10 and got_digits[-10:] == want_digits[-10:]
+    return want == got
+
+
+def _wa_text_contains(haystack, needle):
+    """The message really sits in the box: its first 40 normalised chars are there."""
+    head = _wa_norm(needle)[:40]
+    return bool(head) and head in _wa_norm(haystack)
+
+
+def _wa_visible_rect(rect):
+    """Clamp an off-screen / partly off-screen window to its visible origin (maximized
+    Win10/11 windows report -8,-8). A fully minimized window (-32000) has no visible
+    area and returns None."""
+    if not rect:
+        return None
+    l, t, r, b = rect
+    l, t = max(0, l), max(0, t)
+    if r - l >= _WA_OCR_MIN_SIDE and b - t >= _WA_OCR_MIN_SIDE:
+        return (l, t, r, b)
+    return None
+
+
+def _wa_header_band(rect):
+    """Chat title strip: top of the window, right of the chat list, left of the call buttons."""
+    l, t, r, b = rect
+    w, h = r - l, b - t
+    return (int(l + w * _WA_HEADER_LEFT_RATIO), int(t),
+            int(l + w * _WA_HEADER_RIGHT_RATIO), int(t + h * _WA_HEADER_TOP_RATIO))
+
+
+def _wa_center_in(rect, band):
+    cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+    return band[0] <= cx < band[2] and band[1] <= cy < band[3]
+
+
+def _wa_in_search_band(win, rect):
+    l, t, r, b = win
+    w, h = r - l, b - t
+    return (t <= rect[1] <= t + h * _WA_SEARCH_TOP_RATIO
+            and l <= rect[0] <= l + w * _WA_SEARCH_RIGHT_RATIO)
+
+
+def _wa_in_composer_band(win, rect):
+    l, t, r, b = win
+    w, h = r - l, b - t
+    return (rect[1] >= t + h * _WA_COMPOSER_TOP_RATIO
+            and l + w * _WA_HEADER_LEFT_RATIO <= rect[0] < r)
+
+
+def _wa_has_keyboard_focus(el):
+    try:
+        fn = getattr(el, "has_keyboard_focus", None)
+        return bool(fn()) if callable(fn) else False
+    except Exception:
+        return False
+
+
+def _wa_el_value(el):
+    """UIA Value pattern text. None = the control does not expose a readable value."""
+    try:
+        getter = getattr(el, "get_value", None)
+        if callable(getter):
+            value = getter()
+            return "" if value is None else str(value)
+        iface = getattr(el, "iface_value", None)
+        if iface is not None:
+            return str(iface.CurrentValue or "")
+    except Exception as e:
+        _wa_diagnostic("UIA value read fail", e)
+    return None
+
+
+def _wa_pick_input_value(els):
+    """Focused input wins. No single candidate -> unknown (None), never a guess."""
+    focused = [el for el in els if _wa_has_keyboard_focus(el)]
+    pool = focused or els
+    if len(pool) != 1:
+        return None
+    return _wa_el_value(pool[0])
+
+
+def _wa_chat_layout(window):
+    """ONE UIA descendants pass for the open chat: header names + search/composer inputs.
+
+    Returns dict(rect, header, search, composer, error). search/composer are
+    (candidate_count, value); value is None when missing, ambiguous or unreadable.
+    """
+    lay = {"rect": None, "header": [], "search": (0, None), "composer": (0, None), "error": None}
+    if window is None:
+        return lay
+    try:
+        lay["rect"] = _wa_el_rect(window)
+        if lay["rect"] is None:
+            return lay
+        band = _wa_header_band(lay["rect"])
+        descendants = list(window.descendants())
+    except Exception as e:
+        _wa_diagnostic("chat layout read fail", e)
+        lay["error"] = str(e)[:120]
+        return lay
+    search_els, composer_els = [], []
+    for el in descendants:
+        try:
+            name, ctype = _wa_el_name(el), _wa_el_type(el)
+            if not name and ctype not in _WA_INPUT_TYPES:
+                continue
+            rect = _wa_el_rect(el)
+            if rect is None:
+                continue
+            if (name and _wa_center_in(rect, band) and name not in lay["header"]
+                    and len(lay["header"]) < 20):
+                lay["header"].append(name)
+            if ctype in _WA_INPUT_TYPES:
+                if _wa_in_search_band(lay["rect"], rect):
+                    search_els.append(el)
+                elif _wa_in_composer_band(lay["rect"], rect):
+                    composer_els.append(el)
+        except Exception as e:
+            _wa_diagnostic("chat layout item fail", e)
+    lay["search"] = (len(search_els), _wa_pick_input_value(search_els))
+    lay["composer"] = (len(composer_els), _wa_pick_input_value(composer_els))
+    return lay
+
+
+def _wa_search_box_value():
+    """Chat search box UIA value (None = unknown)."""
+    return _wa_chat_layout(_wa_uia_window())["search"][1]
+
+
+def _wa_composer_text():
+    """Message composer UIA text (None = unknown)."""
+    return _wa_chat_layout(_wa_uia_window())["composer"][1]
+
+
+def _wa_header_ocr_lines(rect):
+    """OCR of the header band only. The caller holds the physical-pixel DPI scope."""
+    visible = _wa_visible_rect(rect)
+    if not visible:
+        return None
+    l, t, r, b = _wa_header_band(visible)
+    if r - l < 50 or b - t < 20:
+        return None
+    try:
+        import vision_control
+        items = vision_control._ocr_screen(region_mode="custom", region=(l, t, r - l, b - t))
+    except Exception as e:
+        _wa_diagnostic("chat header OCR fail", e)
+        return None
+    return [str(item[0]).strip() for item in (items or []) if item and str(item[0]).strip()]
+
+
+def _wa_chat_header_check(target, window=None):
+    """Is the OPEN chat's header EXACTLY the target? Returns (ok, detail).
+
+    UIA names in the header band first, then OCR of the same band. Unknown (no UIA
+    window, no OCR, DPI setup failed) is NOT a match.
+    """
+    with _wa_physical_pixels("chat header check") as ready:
+        if not ready:
+            return False, "DPI context unavailable"
+        win = window if window is not None else _wa_uia_window()
+        lay = _wa_chat_layout(win)
+        for name in lay["header"]:
+            if _wa_name_matches(target, name):
+                return True, "UIA header"
+        rect = _wa_gw_rect(_wa_gw_window()) or lay["rect"]
+        lines = _wa_header_ocr_lines(rect) if rect else None
+        for line in lines or []:
+            if _wa_name_matches(target, line):
+                return True, "OCR header"
+        seen = ", ".join(repr(n[:40]) for n in lay["header"][:3]) or "none"
+        return False, "header match nahi (UIA: %s; OCR lines: %s)" % (
+            seen, "unreadable" if lines is None else len(lines))
+
+
+def _wa_wait_chat_header(target):
+    """Chat load hone tak bounded retries, phir header check."""
+    detail = ""
+    for attempt in range(_WA_HEADER_TRIES):
+        if attempt:
+            time.sleep(0.8)
+        ok, detail = _wa_chat_header_check(target)
+        if ok:
+            return True, detail
+    return False, detail
+
+
+def _wa_wait_search_box(predicate, tries=3):
+    value = None
+    for attempt in range(tries):
+        if attempt:
+            time.sleep(0.4)
+        value = _wa_search_box_value()
+        if value is not None and predicate(value):
+            return True
+    _wa_print("[whatsapp] search box verify fail: %s" % (
+        "UIA value unreadable/ambiguous" if value is None else "value not as expected"))
+    return False
+
+
+def _wa_wait_composer_text(predicate, tries=3):
+    """Composer UIA text, polled while the paste/send settles. None = unreadable."""
+    value = None
+    for attempt in range(tries):
+        if attempt:
+            time.sleep(0.4)
+        value = _wa_composer_text()
+        if value is None or predicate(value):
+            return value
+    return value
+
+
+def _wa_wait_composer_empty(tries=3):
+    for attempt in range(tries):
+        if attempt:
+            time.sleep(0.5)
+        value = _wa_composer_text()
+        if value is None:
+            return False
+        if not _wa_norm(value):
+            return True
+    return False
+
+
 def _wa_open_chat_and_run(name, after_open=None, wait_load=12):
-    """WhatsApp kholo + NAAM se chat search karke kholo (search -> type naam ->
-    enter), phir optional after_open(pyautogui, pyperclip, mode) chalao.
-    Desktop: Ctrl+F search. Web: search box click (coords override wa_web_search_xy).
-    Returns (ok, note)."""
+    """WhatsApp kholo + NAAM se chat search karke kholo, phir optional after_open.
+
+    Verified open: Ctrl+F -> select-all + Backspace -> search box UIA value must be
+    EMPTY -> paste name -> UIA value must equal the name -> Enter -> chat header must
+    EXACTLY match the name. A miss returns WITHOUT Enter, typing or clicks.
+    Returns (ok, note), or (ok, note, state) when after_open answers.
+    """
     try:
         import pyautogui
         import pygetwindow as gw
@@ -547,8 +828,7 @@ def _wa_open_chat_and_run(name, after_open=None, wait_load=12):
     try:
         if not _wa_screen_click_allowed("chat search input", w):
             return False, "WhatsApp foreground unverified; chat input blocked"
-        pyautogui.hotkey("esc")
-        time.sleep(0.4)
+        # Esc press NAHI (global Esc listener Nova ki awaaz band karta hai).
         if mode == "desktop":
             pyautogui.hotkey("ctrl", "f")   # Desktop: search chats
         else:
@@ -560,12 +840,28 @@ def _wa_open_chat_and_run(name, after_open=None, wait_load=12):
                     return False, "WhatsApp foreground unverified; chat input blocked"
                 pyautogui.hotkey("ctrl", "alt", "/")
         time.sleep(0.8)
-        # Naam paste (unicode safe) -> pehla result khulta hai
+        # Purana search text hatao, phir UIA se verify: search box khali hai?
+        pyautogui.hotkey("ctrl", "a")
+        time.sleep(0.1)
+        pyautogui.press("backspace")
+        time.sleep(0.3)
+        if not _wa_wait_search_box(lambda v: not _wa_norm(v)):
+            return False, "search box khali verify nahi hua, chat nahi khuli (Enter nahi dabaya)"
+        # Naam paste (unicode safe), phir UIA se verify: search box me naam hai?
         pyperclip.copy(str(name))
         pyautogui.hotkey("ctrl", "v")
         time.sleep(1.5)
+        if not _wa_wait_search_box(lambda v: _wa_norm(v) == _wa_norm(name)):
+            return False, "search box me naam verify nahi hua, chat nahi khuli (Enter nahi dabaya)"
         pyautogui.press("enter")
         time.sleep(1.2)
+        # Chat header EXACT target hai? (search me ek se zyada result ho sakte hain)
+        header_ok, header_detail = _wa_wait_chat_header(name)
+        if not header_ok:
+            _wa_print("[whatsapp] chat header verify FAIL: " + header_detail)
+            return (False, "chat header me '%s' verify nahi hua, isliye chat block ki" % name,
+                    WA_CHAT_HEADER_UNVERIFIED)
+        _wa_print("[whatsapp] chat header verified: " + header_detail)
         if callable(after_open):
             r = after_open(pyautogui, pyperclip, mode)
             # after_open 2-tuple (ok, note) ya 3-tuple (ok, note, state) dono
@@ -580,18 +876,61 @@ def _wa_open_chat_and_run(name, after_open=None, wait_load=12):
         pyautogui.PAUSE, pyautogui.FAILSAFE = old_pause, old_failsafe
 
 
-def _wa_send_by_name(name, message, wait_load=12):
-    """WhatsApp me NAAM se search karke message bhejo - number save ki zaroorat Nahi.
-    Returns (ok, note)."""
+def _wa_send_auto_name(args):
+    """Naam wale path par default auto-send (header verify ke baad). Explicit
+    auto_send=false -> sirf type karo, Enter nahi."""
+    v = (args or {}).get("auto_send", None)
+    if isinstance(v, bool):
+        return v
+    if v is not None and str(v).strip().lower() in ("0", "false", "no", "n", "nahi", "off"):
+        return False
+    return True
+
+
+def _wa_send_by_name(name, message, wait_load=12, auto=True):
+    """WhatsApp me NAAM se chat khol ke message bhejo (number save ki zaroorat nahi).
+
+    'sent' sirf tab: Enter ke baad composer UIA se khali hua AUR pehle usme message tha.
+    Returns (ok, note):
+      ok=True,  note=mode               verified send
+      ok=True,  note=_WA_NOTE_TYPED     auto=False: type kiya, Enter nahi dabaya
+      ok=False, note=reason             kuch verify nahi hua
+    """
     def _type_and_send(pg, clipboard, mode):
-        # Message paste + Enter = send
         clipboard.copy(str(message))
         pg.hotkey("ctrl", "v")
         time.sleep(0.5)
+        composer_before = _wa_wait_composer_text(lambda v: _wa_text_contains(v, message))
+        if composer_before is not None and not _wa_text_contains(composer_before, message):
+            return False, "message chat box me paste verify nahi hua, Enter nahi dabaya", "not-typed"
+        if not auto:
+            return True, _WA_NOTE_TYPED, "typed"
+        # Enter se pehle aakhri check: chat abhi bhi target ki hai?
+        still_ok, still_detail = _wa_chat_header_check(name)
+        if not still_ok:
+            _wa_print("[whatsapp] pre-send header check FAIL: " + still_detail)
+            return False, "chat header pre-send check fail, Enter nahi dabaya", "header-blocked"
         pg.press("enter")
-        return True, mode
+        if composer_before is None or not _wa_wait_composer_empty():
+            return False, _WA_NOTE_SEND_UNVERIFIED, "send-unverified"
+        return True, mode, "sent"
 
-    return _wa_open_chat_and_run(name, after_open=_type_and_send, wait_load=wait_load)
+    res = _wa_open_chat_and_run(name, after_open=_type_and_send, wait_load=wait_load)
+    ok, note, _state = _wa_unpack_result(res)
+    return ok, note
+
+
+def _wa_send_fail_reply(target, note):
+    """Honest failure reply. Fail wording on purpose: the verifier must not call it success."""
+    if _WA_NOTE_SEND_UNVERIFIED in str(note):
+        return (f"'{target}' ke liye message Enter daba diya, par send verify nahi hua, fail. "
+                f"WhatsApp me check kar lo, bheja gaya ho sakta hai.")
+    if "verify nahi hua" in str(note) or "Enter nahi dabaya" in str(note):
+        return (f"Naam se bhej nahi paya, fail: {note}. Message nahi bheja. "
+                f"Chat khol ke check karo, ya number save karo: save contact {target} number 10 digit.")
+    return (f"Naam se bhej nahi paya, fail ({note}). "
+            f"Ya toh WhatsApp login/app check karo, ya number save karo: "
+            f"save contact {target} number <10 digit>")
 
 
 def whatsapp_send(args):
@@ -606,14 +945,15 @@ def whatsapp_send(args):
         return "Message kya bhejna hai?"
     phone, _email = _resolve_contact(target)
     if not phone:
-        # Number ki zaroorat nahi - WhatsApp me naam se search karke khud bhejo
-        ok, note = _wa_send_by_name(target, message)
+        # Number ki zaroorat nahi - WhatsApp me naam se chat khol ke (header verify) bhejo
+        ok, note = _wa_send_by_name(target, message, auto=_wa_send_auto_name(args))
+        if ok and note == _WA_NOTE_TYPED:
+            return (f"WhatsApp me '{target}' ki chat khuli, header verify hua, aur message type kar diya. "
+                    f"Enter tum daba do, main nahi bheja.")
         if ok:
-            return (f"WhatsApp me '{target}' search karke message bhej diya ({note} mode, best-effort). "
-                    f"Chat khol ke check kar lo.")
-        return (f"Naam se bhej nahi paya ({note}). "
-                f"Ya toh WhatsApp login/app check karo, ya number save karo: "
-                f"save contact {target} number <10 digit>")
+            return (f"WhatsApp me '{target}' ko message bhej diya. "
+                    f"Send verify ho gaya, chat header match hua.")
+        return _wa_send_fail_reply(target, note)
     if len(phone) == 10:
         phone = "91" + phone
     text = urllib.parse.quote(message)
@@ -648,7 +988,7 @@ def whatsapp_send(args):
                     time.sleep(0.5)
                     pyautogui.press("enter")
             except Exception as e:
-                print(f"[whatsapp auto-send skip] {e}")
+                _wa_print(f"[whatsapp auto-send skip] {e}")
         threading.Thread(target=_send, daemon=True).start()
         result += " | Auto-send: 4 sec me Enter dabega (best-effort)."
     else:
@@ -758,7 +1098,7 @@ def _wa_call_name_weights(video=False):
             if n:
                 w[n] = max(w.get(n, 0), 3)
     except Exception as e:
-        print("[whatsapp_call] wa_call_names config skip: " + str(e)[:50])
+        _wa_print("[whatsapp_call] wa_call_names config skip: " + str(e)[:50])
     return w
 
 
@@ -783,7 +1123,7 @@ def _wa_win_score(title, rect):
 
 
 def _wa_diagnostic(operation, error):
-    print("[whatsapp_call] %s: %s: %s" % (
+    _wa_print("[whatsapp_call] %s: %s: %s" % (
         operation, type(error).__name__, str(error).replace("\n", " ")[:180]))
 
 
@@ -861,7 +1201,7 @@ def _wa_uia_window_candidates(dump=False, backend="uia"):
     out.sort(key=lambda c: -c[0])
     if dump:
         for score, title, rect, _ in out[:10]:
-            print("window score=%d title=%r rect=%s" % (score, title, rect))
+            _wa_print("window score=%d title=%r rect=%s" % (score, title, rect))
     return out
 
 
@@ -998,7 +1338,7 @@ def _wa_foreground_status(window=None):
 def _wa_screen_click_allowed(operation, window=None):
     ok, detail = _wa_foreground_status(window)
     if not ok:
-        print("[whatsapp_call] %s BLOCKED: foreground unverified (%s)" % (operation, detail))
+        _wa_print("[whatsapp_call] %s BLOCKED: foreground unverified (%s)" % (operation, detail))
     return ok
 
 
@@ -1039,13 +1379,12 @@ def _wa_ocr_regions():
         if not ready:
             return []
         regions = []
-        rect = _wa_gw_rect(_wa_gw_window())
-        if rect is None:
-            rect = _wa_el_rect(_wa_uia_window())
+        # Off-screen / partly off-screen window: its VISIBLE part is read (clamped),
+        # it is not rejected. Fully minimized windows still give no region.
+        rect = _wa_visible_rect(_wa_gw_rect(_wa_gw_window()) or _wa_el_rect(_wa_uia_window()))
         if rect:
             l, t, r, b = rect
-            if l >= 0 and t >= 0 and r - l >= 100 and b - t >= 100:
-                regions.append(("whatsapp", (l, t, r - l, b - t)))
+            regions.append(("whatsapp", (l, t, r - l, b - t)))
         return regions + [("active", None), ("full", None)]
 
 
@@ -1189,7 +1528,7 @@ def _wa_uia_call_candidates(video=False, dump=False):
     """STRICT exact-name scoring unchanged; return unique controls, best first."""
     scan = _wa_scan_call_controls(_wa_uia_window(), video=video)
     if dump:
-        print("\n".join(_wa_scan_lines(scan)))
+        _wa_print("\n".join(_wa_scan_lines(scan)))
     return scan["candidates"]
 
 
@@ -1241,15 +1580,15 @@ def _wa_click_call_button_ui(video=False):
     time.sleep(0.3)
     cands = _wa_uia_call_candidates(video)
     if not cands:
-        print("[whatsapp_call] UIA me strict call button nahi mila (fuzzy off)")
+        _wa_print("[whatsapp_call] UIA me strict call button nahi mila (fuzzy off)")
         return None
     for score, name, ctype, el in cands[:_WA_CALL_MAX_CLICK_TRIES]:
         ok, how = _wa_uia_click(el)
         if ok:
             note = "uia %s '%s' score=%d" % (how, name, score)
-            print("[whatsapp_call] ui click OK: " + note)
+            _wa_print("[whatsapp_call] ui click OK: " + note)
             return note
-        print("[whatsapp_call] ui click fail '%s': %s" % (name, how))
+        _wa_print("[whatsapp_call] ui click fail '%s': %s" % (name, how))
     return None
 
 
@@ -1266,17 +1605,17 @@ def _wa_guarded_vision_click(target):
                 return None
             rect = _wa_screen_rect(window)
             if not rect:
-                print("[whatsapp_call] vision_click BLOCKED: window bounds unavailable")
+                _wa_print("[whatsapp_call] vision_click BLOCKED: window bounds unavailable")
                 return None
             import vision_agent
             res = vision_agent.vision_click(target, dry_run=True, use_active_window=True)
             if not isinstance(res, dict) or not res.get("ok"):
-                print("[whatsapp_call] vision click miss: " + str(res)[:100])
+                _wa_print("[whatsapp_call] vision click miss: " + str(res)[:100])
                 return None
             x, y = int(res["x"]), int(res["y"])
             import pyautogui
             if rect != _wa_screen_rect(window) or not _wa_point_in_rect(rect, x, y):
-                print("[whatsapp_call] vision_click BLOCKED: moved window/out-of-window coords")
+                _wa_print("[whatsapp_call] vision_click BLOCKED: moved window/out-of-window coords")
                 return None
             if not _wa_screen_click_allowed("vision_click final click", window):
                 return None
@@ -1301,20 +1640,20 @@ def _wa_offset_click(off, end_call=False):
             w = _wa_gw_window()
             rect = _wa_gw_rect(w)
             if not rect:
-                print("[whatsapp_call] coords BLOCKED: WhatsApp bounds unavailable")
+                _wa_print("[whatsapp_call] coords BLOCKED: WhatsApp bounds unavailable")
                 return None
             l, t, r, b = rect
             xoff, yoff = int(off[0]), int(off[1])
             x, y = (l + xoff, b - yoff) if end_call else (r - xoff, t + yoff)
             if (l < 0 or t < 0 or r - l < 100 or b - t < 100
                     or xoff < 0 or yoff < 0 or not _wa_point_in_rect(rect, x, y)):
-                print("[whatsapp_call] coords BLOCKED: invalid offsets/window bounds")
+                _wa_print("[whatsapp_call] coords BLOCKED: invalid offsets/window bounds")
                 return None
             if not _wa_screen_click_allowed("configured coords", w):
                 return None
             pyautogui.click(x, y)
             note = "coords click (%d,%d) offset=%dx%d" % (x, y, xoff, yoff)
-            print("[whatsapp_call] " + note)
+            _wa_print("[whatsapp_call] " + note)
             return note
         except Exception as e:
             _wa_diagnostic("coords fallback fail", e)
@@ -1337,7 +1676,7 @@ def _wa_web_search_click(window, xy, pyautogui):
             else:
                 x, y = rect[0] + 150, rect[1] + 130
             if not _wa_point_in_rect(rect, x, y):
-                print("[whatsapp_call] web search coords BLOCKED: out-of-window bounds")
+                _wa_print("[whatsapp_call] web search coords BLOCKED: out-of-window bounds")
                 return False
             if not _wa_screen_click_allowed("web search coords", window):
                 return False
@@ -1355,7 +1694,7 @@ def _wa_call_fallback_xy(video=False):
         key = "video" if video else "voice"
         off = (cfg.get("wa_call_button_offsets") or {}).get(key)
         if not isinstance(off, (list, tuple)) or len(off) != 2:
-            print("[whatsapp_call] coords fallback DISABLED "
+            _wa_print("[whatsapp_call] coords fallback DISABLED "
                   "(wa_call_button_offsets." + key + " missing/invalid)")
             return None
         return _wa_offset_click(off)
@@ -1385,33 +1724,33 @@ def _wa_call_state_note(video=False, wait=None):
                 time.sleep(wait)
             import vision_control
         except Exception as e:
-            print("[whatsapp_call] verify skip (ocr unavailable): " + str(e)[:60])
+            _wa_print("[whatsapp_call] verify skip (ocr unavailable): " + str(e)[:60])
             return WA_CALL_UNKNOWN, "ocr unavailable"
         text_seen = False
         for mode, region in _wa_ocr_regions():
             try:
                 t = str(_wa_ocr_read(mode, region) or "")
             except Exception as e:
-                print("[whatsapp_call] ocr '%s' fail: %s" % (mode, str(e)[:50]))
+                _wa_print("[whatsapp_call] ocr '%s' fail: %s" % (mode, str(e)[:50]))
                 continue
             if not t or _WA_OCR_EMPTY_MARK in t.lower():
                 continue
             marker = _wa_ocr_is_terminal(t)
             if marker:
-                print("[whatsapp_call] OCR DISCARD [%s]: terminal marker %r" % (mode, marker))
+                _wa_print("[whatsapp_call] OCR DISCARD [%s]: terminal marker %r" % (mode, marker))
                 continue
             text_seen = True
             low = t.lower()
             for hint in _WA_CALL_SCREEN_HINTS:
                 if hint in low:
-                    print("[whatsapp_call] verify OK: '%s' dikha (%s window)" % (hint, mode))
+                    _wa_print("[whatsapp_call] verify OK: '%s' dikha (%s window)" % (hint, mode))
                     return WA_CALL_DETECTED, hint
             # Active window me hint nahi mila to full screen bhi dekho - WhatsApp
             # ki calling screen aksar ALAG window hoti hai, chat window me nahi.
         if not text_seen:
-            print("[whatsapp_call] verify: ocr ne text nahi diya - confirm nahi kar sakte")
+            _wa_print("[whatsapp_call] verify: ocr ne text nahi diya - confirm nahi kar sakte")
             return WA_CALL_UNKNOWN, "ocr ne text nahi diya"
-        print("[whatsapp_call] verify MISS: call screen ka koi hint nahi")
+        _wa_print("[whatsapp_call] verify MISS: call screen ka koi hint nahi")
         return WA_CALL_ABSENT, "no call-screen text"
 
 
@@ -1420,7 +1759,7 @@ def _wa_call_already_active(video=False):
     dobara dabane se call cut/switch ho sakti hai)."""
     state, hint = _wa_call_state_note(video, wait=0.6)
     if state == WA_CALL_DETECTED:
-        print("[whatsapp_call] call already active ('%s') - dobara dial nahi kiya" % hint)
+        _wa_print("[whatsapp_call] call already active ('%s') - dobara dial nahi kiya" % hint)
         return True
     return False
 
@@ -1464,7 +1803,7 @@ def _wa_call_probe(video=False, end_call=False):
     lines.append("wa_end_call_button_offsets: %s" % str(cfg.get("wa_end_call_button_offsets")))
     lines.append("wa_call_names: %s" % str(cfg.get("wa_call_names")))
     out = "\n".join(lines)
-    print(out)
+    _wa_print(out)
     return out
 
 
@@ -1490,7 +1829,7 @@ def _wa_near_miss_names(window=None):
 def _wa_uia_end_call_candidates(dump=False):
     scan = _wa_scan_call_controls(_wa_uia_window(), end_call=True)
     if dump:
-        print("\n".join(_wa_scan_lines(scan)))
+        _wa_print("\n".join(_wa_scan_lines(scan)))
     return scan["candidates"]
 
 
@@ -1499,7 +1838,7 @@ def _wa_click_end_call_button_ui():
         ok, how = _wa_uia_click(el)
         if ok:
             return "uia %s %s" % (how, name)
-        print("[whatsapp_call] end-call UIA click fail %r: %s" % (name, how))
+        _wa_print("[whatsapp_call] end-call UIA click fail %r: %s" % (name, how))
     return None
 
 
@@ -1513,7 +1852,7 @@ def _wa_end_call_fallback_xy():
         cfg = _load_json(CONFIG_PATH) or {}
         off = cfg.get("wa_end_call_button_offsets")
         if not isinstance(off, (list, tuple)) or len(off) != 2:
-            print("[whatsapp_call] end-call coords fallback DISABLED (missing/invalid offsets)")
+            _wa_print("[whatsapp_call] end-call coords fallback DISABLED (missing/invalid offsets)")
             return None
         return _wa_offset_click(off, end_call=True)
     except Exception as e:
@@ -1525,34 +1864,163 @@ def _wa_end_call_probe():
     return _wa_call_probe(end_call=True)
 
 
+def _wa_app_windows():
+    """Visible top-level windows that belong to WhatsApp: title OR owner process says
+    WhatsApp (a separate call window may be titled with the contact's name). Same
+    (score, title, rect, window) shape as _wa_uia_window_candidates. None = the list
+    itself could not be read, which is unknown and never proof of 'no call'."""
+    try:
+        import ui_agent
+        if not ui_agent.IS_WIN:
+            return None
+        if ui_agent._Desktop is None:
+            ui_agent._get_pwa()
+        if ui_agent._Desktop is None:
+            return None
+        import psutil
+        out = []
+        for w in ui_agent._Desktop(backend="uia").windows(visible_only=True):
+            try:
+                title = str(w.window_text() or "")
+                owner = psutil.Process(w.process_id()).name().lower()
+                if not ("whatsapp" in owner or "whatsapp" in title.lower() or "call" in title.lower()):
+                    continue
+                rect = _wa_el_rect(w, diagnostic="app window rectangle fail")
+                out.append((_wa_win_score(title, rect), title, rect, w))
+            except Exception as e:
+                _wa_diagnostic("app window item fail", e)
+        return out
+    except Exception as e:
+        _wa_diagnostic("app window enumeration fail", e)
+        return None
+
+
+def _wa_visible_candidate(cand):
+    """(score, title, rect, window) that is on screen and window-sized."""
+    rect = cand[2]
+    if not rect:
+        return False
+    l, t, r, b = rect
+    return (l > _WA_OFFSCREEN_LIMIT and t > _WA_OFFSCREEN_LIMIT
+            and r - l >= _WA_MIN_WINDOW_SIZE and b - t >= _WA_MIN_WINDOW_SIZE)
+
+
+def _wa_call_absence_proven():
+    """POSITIVE proof of 'no call'. OCR 'absent' (text tha, call hint nahi) kaafi nahi.
+
+    Chahiye:
+      - WhatsApp ki visible windows (title ya process se) exactly EK
+      - wo window call-titled nahi, aur chat ka box (search/composer) dikhta hai
+      - uske UIA tree me strict End-call control nahi
+    Kuch bhi unreadable => not proven. Limit: call window jiska title aur process dono
+    WhatsApp jaise na hon, wo yahan nahi dikhegi (docs/WHATSAPP_HARDENING.md me noted).
+    Returns (proven, detail).
+    """
+    wins = _wa_app_windows()
+    if wins is None:
+        return False, "WhatsApp window list unreadable"
+    visible = [cand for cand in wins if _wa_visible_candidate(cand)]
+    if not visible:
+        return False, "WhatsApp window nahi mili"
+    if len(visible) > 1:
+        return False, "%d visible WhatsApp windows (call window ho sakti hai)" % len(visible)
+    _score, title, _rect, win = visible[0]
+    if "call" in str(title).lower():
+        return False, "call-titled window"
+    lay = _wa_chat_layout(win)
+    if lay["error"]:
+        return False, "UIA tree read fail"
+    if not (lay["search"][0] or lay["composer"][0]):
+        return False, "chat box nahi dikha (call screen ho sakti hai)"
+    scan = _wa_scan_call_controls(win, end_call=True)
+    if scan["error"]:
+        return False, "UIA tree read fail"
+    if scan["candidates"]:
+        return False, "End-call control UIA me dikha"
+    return True, "ek WhatsApp chat window, End button nahi"
+
+
 def whatsapp_call_end(args=None):
-    """End current call without spoken confirmation; never infer success from unknown OCR."""
+    """Call kaato. 'Koi call nahi' sirf POSITIVE proof ke saath bolo.
+
+    OCR 'absent' proof NAHI hai: UIA End button try karo; wo bhi na mile to honest
+    'call state verify nahi hua' (kuch kaata nahi). Detected call par UI -> vision ->
+    coords chain chalti hai.
+    """
     if _wa_call_wants_probe(args):
         return _wa_end_call_probe()
     _wa_focus_call_window()
     state, hint = _wa_call_state_note(wait=0.6)
-    if state == WA_CALL_ABSENT:
-        return "Boss, abhi koi WhatsApp call chal hi nahi rahi, kaatne ko kuch nahi hai."
     attempts = []
-    if state == WA_CALL_DETECTED:
-        for clicker in (_wa_click_end_call_button_ui, _wa_click_end_call_button_vision,
-                        _wa_end_call_fallback_xy):
-            try:
-                note = clicker()
-            except Exception as e:
-                attempts.append(str(e)[:100])
-                continue
-            if not note:
-                attempts.append(clicker.__name__ + " unavailable")
-                continue
-            state, hint = _wa_call_state_note()
-            attempts.append("%s verify=%s: %s" % (note, state, hint))
-            if state == WA_CALL_ABSENT:
+    seen_active = state == WA_CALL_DETECTED
+    if state == WA_CALL_ABSENT:
+        proven, why = _wa_call_absence_proven()
+        if proven:
+            return "Boss, abhi koi WhatsApp call chal hi nahi rahi, kaatne ko kuch nahi hai."
+        _wa_print("[whatsapp_call] end: OCR absent without proof (%s) - UIA End button try" % why)
+        attempts.append("OCR me call hint nahi, par 'no call' ka proof nahi (%s)" % why)
+    elif state == WA_CALL_UNKNOWN:
+        attempts.append("call state unknown: " + str(hint))
+    clickers = ((_wa_click_end_call_button_ui, _wa_click_end_call_button_vision,
+                 _wa_end_call_fallback_xy)
+                if seen_active else (_wa_click_end_call_button_ui,))
+    clicked = False
+    for clicker in clickers:
+        try:
+            note = clicker()
+        except Exception as e:
+            attempts.append(clicker.__name__ + " crash: " + str(e)[:100])
+            continue
+        if not note:
+            attempts.append(clicker.__name__ + " unavailable")
+            continue
+        clicked = True
+        state, hint = _wa_call_state_note()
+        if state == WA_CALL_ABSENT:
+            proven, why = _wa_call_absence_proven()
+            if proven:
                 return "WhatsApp call kaat di."
-    else:
-        attempts.append("active call verify unknown: " + hint)
-    return ("Call kaat nahi paya, fail: " + " ; ".join(attempts)
-            + ". Debug: python comms_agent.py --end-call-probe")
+            attempts.append("%s: OCR absent, proof nahi (%s)" % (note, why))
+            continue
+        attempts.append("%s verify=%s: %s" % (note, state, hint))
+        if state == WA_CALL_DETECTED:
+            seen_active = True
+    if seen_active:
+        return ("Call kaat nahi paya, fail: " + " ; ".join(attempts)
+                + ". Debug: python comms_agent.py --end-call-probe")
+    if clicked:
+        return ("End button dabaya, par call state verify nahi hua. Call screen khud check karo. "
+                "Debug: python comms_agent.py --end-call-probe")
+    return ("WhatsApp call state verify nahi hua, isliye kuch kaata nahi (" + " ; ".join(attempts)
+            + "). Call screen khud check karo. Debug: python comms_agent.py --end-call-probe")
+
+
+def _wa_chat_probe():
+    """READ-ONLY chat diagnostics for the currently open chat (no typing, no clicks).
+
+    Shows the header names the verifier can see and whether the search box and
+    composer UIA values are readable. Review or redact names before sharing output.
+    """
+    focus = _wa_focus_call_window()
+    lines = ["=== whatsapp chat probe (read-only) ===", "focus-result: " + focus]
+    win = _wa_uia_window()
+    lay = _wa_chat_layout(win)
+    lines.append("UIA window: %s rect=%s" % ("mila" if win is not None else "NAHI mila", lay["rect"]))
+    lines.append("header band names (UIA, max 3): "
+                 + (", ".join(repr(n[:40]) for n in lay["header"][:3]) or "none"))
+    for label in ("search", "composer"):
+        count, value = lay[label]
+        lines.append("%s box: candidates=%d value=%s" % (
+            label, count, "unreadable/ambiguous" if value is None else "readable len=%d" % len(value)))
+    with _wa_physical_pixels("chat probe OCR") as ready:
+        if ready and lay["rect"]:
+            lines_ocr = _wa_header_ocr_lines(_wa_gw_rect(_wa_gw_window()) or lay["rect"])
+            lines.append("header OCR lines: %s" % ("unreadable" if lines_ocr is None else len(lines_ocr)))
+            if lines_ocr:
+                lines.append("header OCR (max 3): " + " | ".join(item[:40] for item in lines_ocr[:3]))
+    out = "\n".join(lines)
+    _wa_print(out)
+    return out
 
 
 def _wa_unpack_result(res):
@@ -1573,10 +2041,9 @@ def _wa_unpack_result(res):
 
 
 def whatsapp_call(args):
-    """WhatsApp VOICE/VIDEO call lagao - contact naam se resolve karo, chat
-    kholo, phir header ka call button STRICT UIA -> vision -> coords chain se
-    click karo. Har click ke BAAD call screen OCR se VERIFY hota hai; verify
-    na hone pe jhoothi success NAHI bolta.
+    """WhatsApp VOICE/VIDEO call lagao - contact naam se chat khol kar (header EXACT verify)
+    call button STRICT UIA -> vision -> coords chain se click karo. Har click ke BAAD call
+    screen OCR se VERIFY hota hai; verify na ho to jhoothi success NAHI bolta.
     Args: {contact: str, video: bool, probe: bool}"""
     args = args or {}
     target = _wa_call_target(args)
@@ -1593,15 +2060,34 @@ def whatsapp_call(args):
     # WhatsApp me naam se search hoke chat khul jati hai.
     phone, _email = _resolve_contact(target)
     if phone:
-        print("[whatsapp_call] contact resolved: %s (+91%s)" % (target, phone[-10:]))
+        _wa_print("[whatsapp_call] contact resolved: %s (+91%s)" % (target, phone[-10:]))
 
     def _do_call(_pg, _clipboard, mode):
         _wa_focus_call_window()
         time.sleep(0.5)
+        # Window handle pehle pakdo: click ke baad header check isi window par chale.
+        main_win = _wa_uia_window()
+        # Click se pehle: chat header abhi bhi EXACT target hai? (focus change ke baad)
+        header_ok, header_detail = _wa_chat_header_check(target, window=main_win)
+        if not header_ok:
+            _wa_print("[whatsapp_call] header check before click FAIL: " + header_detail)
+            return False, "chat header verify nahi hua", WA_CHAT_HEADER_UNVERIFIED
 
         # Double-dial guard
         if _wa_call_already_active(video):
             return True, "call pehle se active thi, dobara dial nahi kiya", WA_CALL_DETECTED
+
+        def _confirmed(note, hint):
+            # Call hint mila: chat header ab bhi target ka hona chahiye (call naam se bandhi ho).
+            still_ok, still_detail = _wa_chat_header_check(target, window=main_win)
+            if not still_ok:
+                _wa_print("[whatsapp_call] call hint mila par header post-click check FAIL: "
+                          + still_detail)
+                return False, str(note), WA_CALL_UNKNOWN
+            # Spoken reply me parentheses nahi (bolo.py TTS strip karta hai)
+            _wa_print("[whatsapp_call] method note: " + str(note)
+                      + " | verify: " + str(hint) + " | " + mode + " mode")
+            return True, str(note), WA_CALL_DETECTED
 
         attempts = []
         clicked = False
@@ -1613,7 +2099,7 @@ def whatsapp_call(args):
                 note = clicker(video)
             except Exception as e:
                 note = None
-                print("[whatsapp_call] %s crash: %s" % (clicker.__name__, str(e)[:60]))
+                _wa_print("[whatsapp_call] %s crash: %s" % (clicker.__name__, str(e)[:60]))
             if not note:
                 attempts.append(clicker.__name__ + ": miss")
                 continue
@@ -1621,20 +2107,17 @@ def whatsapp_call(args):
             attempts.append(clicker.__name__ + ": " + str(note))
             state, hint = _wa_call_state_note(video)
             if state == WA_CALL_DETECTED:
-                # Spoken reply me parentheses nahi (bolo.py TTS strip karta hai)
-                print("[whatsapp_call] method note: " + str(note)
-                      + " | verify: " + str(hint) + " | " + mode + " mode")
-                return True, str(note), state
-            print("[whatsapp_call] verify %s after %s (%s) - next layer try"
-                  % (state, clicker.__name__, hint))
+                return _confirmed(note, hint)
+            _wa_print("[whatsapp_call] verify %s after %s (%s) - next layer try"
+                      % (state, clicker.__name__, hint))
 
         # Koi bhi layer confirm nahi kar paya - ek aakhri check
         state, hint = _wa_call_state_note(video)
         if state == WA_CALL_DETECTED:
-            print("[whatsapp_call] method note: final check verified (" + hint + ")")
-            return True, "final check", state
-        print("[whatsapp_call] method note: " + " ; ".join(attempts)
-              + " | verify: " + str(state) + " | " + mode + " mode")
+            _wa_print("[whatsapp_call] method note: final check verified (" + hint + ")")
+            return _confirmed("final check", hint)
+        _wa_print("[whatsapp_call] method note: " + " ; ".join(attempts)
+                  + " | verify: " + str(state) + " | " + mode + " mode")
         if not clicked:
             return False, " ; ".join(attempts) or "koi click layer chala hi nahi", WA_CALL_NOCLICK
         return False, " ; ".join(attempts), state
@@ -1643,7 +2126,7 @@ def whatsapp_call(args):
     # after_open chala (3-tuple) ya chat hi nahi khuli (2-tuple) - dono handle
     chat_phase_only = not (isinstance(res, tuple) and len(res) >= 3)
     ok, note, state = _wa_unpack_result(res)
-    print("[whatsapp_call] result: ok=%s state=%s note=%s" % (ok, state, str(note)[:90]))
+    _wa_print("[whatsapp_call] result: ok=%s state=%s note=%s" % (ok, state, str(note)[:90]))
 
     if chat_phase_only:
         # Chat hi nahi khuli - WhatsApp/login/app ka masla
@@ -1655,6 +2138,10 @@ def whatsapp_call(args):
         return ("WhatsApp me " + target + " ko " + kind + " laga diya. "
                 "Ringing ho raha hoga.")
 
+    if state == WA_CHAT_HEADER_UNVERIFIED:
+        return (target + " ko " + kind + " nahi laga paya, fail: chat header me naam verify "
+                "nahi hua, isliye call nahi ki. Chat khol ke check karo.")
+
     if state == WA_CALL_NOCLICK:
         return (target + " ko " + kind + " nahi laga paya, fail: call button click "
                 "hi nahi hua, UIA aur vision dono me button nahi mila. "
@@ -1663,8 +2150,8 @@ def whatsapp_call(args):
 
     if state == WA_CALL_ABSENT:
         return (target + " ko " + kind + " nahi laga paya, fail: call button click "
-                "hua par calling screen nahi aayi. Chat kholke khud try karo, "
-                "ya debug chalao: python comms_agent.py --call-probe")
+                "hua par call verify nahi hua (calling screen ka text nahi mila). "
+                "Chat kholke khud try karo, ya debug chalao: python comms_agent.py --call-probe")
 
     # OCR chala hi nahi - jhooth nahi bolenge, par hard fail bhi nahi
     return (target + " ke chat me " + kind + " button dabaya, par call confirm "
@@ -1706,6 +2193,9 @@ if __name__ == "__main__":
         sys.exit(0)
     if "--call-probe" in sys.argv:
         _wa_call_probe("--video" in sys.argv)
+        sys.exit(0)
+    if "--chat-probe" in sys.argv:
+        _wa_chat_probe()
         sys.exit(0)
     print("=== Phase 5 comms_agent TEST ===")
     print(calendar_add({"title": "Team standup", "when": "tomorrow 9 am"}))

@@ -91,6 +91,7 @@ def test_end_candidates_no_header_bonus_and_near_misses(monkeypatch):
 def test_end_chain_verified(monkeypatch, success_layer):
     calls = []
     monkeypatch.setattr(c, '_wa_focus_call_window', lambda: None)
+    monkeypatch.setattr(c, '_wa_call_absence_proven', lambda: (True, 'test: no call window, no End button'))
     states = iter(['detected'] + ['detected'] * success_layer + ['absent'])
     monkeypatch.setattr(c, '_wa_call_state_note', lambda **kw: (next(states), 'hint'))
     for idx, name in enumerate(('_wa_click_end_call_button_ui', '_wa_click_end_call_button_vision', '_wa_end_call_fallback_xy')):
@@ -99,13 +100,58 @@ def test_end_chain_verified(monkeypatch, success_layer):
     assert calls == list(range(success_layer + 1))
 
 
-@pytest.mark.parametrize('initial', ['absent', 'unknown'])
-def test_no_call_no_click(monkeypatch, initial):
+def test_absent_with_positive_proof_is_no_call_and_no_click(monkeypatch):
     monkeypatch.setattr(c, '_wa_focus_call_window', lambda: None)
-    monkeypatch.setattr(c, '_wa_call_state_note', lambda **kw: (initial, 'hint'))
+    monkeypatch.setattr(c, '_wa_call_state_note', lambda **kw: ('absent', 'no call-screen text'))
+    monkeypatch.setattr(c, '_wa_call_absence_proven', lambda: (True, 'one window, no End button'))
     monkeypatch.setattr(c, '_wa_click_end_call_button_ui', lambda: pytest.fail('must not click'))
+    monkeypatch.setattr(c, '_wa_click_end_call_button_vision', lambda: pytest.fail('must not click'))
+    monkeypatch.setattr(c, '_wa_end_call_fallback_xy', lambda: pytest.fail('must not click'))
     result = c.whatsapp_call_end()
-    assert ('kaatne ko kuch nahi' if initial == 'absent' else '--end-call-probe') in result
+    assert 'kaatne ko kuch nahi' in result, result
+
+
+@pytest.mark.parametrize('initial', ['absent', 'unknown'])
+def test_unproven_or_unknown_tries_uia_end_and_never_claims_no_call(monkeypatch, initial):
+    """OCR 'absent' is NOT proof of no call. Without proof: UIA End button, else honest 'verify nahi hua'."""
+    tried = []
+    monkeypatch.setattr(c, '_wa_focus_call_window', lambda: None)
+    monkeypatch.setattr(c, '_wa_call_state_note', lambda **kw: (initial, 'OCR says nothing'))
+    monkeypatch.setattr(c, '_wa_call_absence_proven', lambda: (False, 'End button UIA me nahi'))
+    monkeypatch.setattr(c, '_wa_click_end_call_button_ui', lambda: tried.append('ui') or None)
+    monkeypatch.setattr(c, '_wa_click_end_call_button_vision', lambda: tried.append('vision') or 'v')
+    monkeypatch.setattr(c, '_wa_end_call_fallback_xy', lambda: tried.append('xy') or 'xy')
+    result = c.whatsapp_call_end()
+    assert tried == ['ui'], 'only the UIA End button may run without proof: %r' % tried
+    assert 'call state verify nahi hua' in result, result
+    assert 'koi WhatsApp call' not in result and 'kaatne ko kuch nahi' not in result, result
+    assert '--end-call-probe' in result, result
+    ok, _ = verifier.verify({'tool': 'whatsapp_call_end'}, result)
+    assert ok is False
+
+
+def test_unproven_absent_uia_end_click_then_proof_is_verified(monkeypatch):
+    tried = []
+    monkeypatch.setattr(c, '_wa_focus_call_window', lambda: None)
+    states = iter([('absent', 'OCR text, no hint'), ('absent', 'after click')])
+    monkeypatch.setattr(c, '_wa_call_state_note', lambda **kw: next(states))
+    proofs = iter([(False, 'End button still there'), (True, 'no window, no End button')])
+    monkeypatch.setattr(c, '_wa_call_absence_proven', lambda: next(proofs))
+    monkeypatch.setattr(c, '_wa_click_end_call_button_ui', lambda: tried.append('ui') or 'uia invoke End call')
+    monkeypatch.setattr(c, '_wa_click_end_call_button_vision', lambda: tried.append('vision') or 'v')
+    monkeypatch.setattr(c, '_wa_end_call_fallback_xy', lambda: tried.append('xy') or 'xy')
+    assert c.whatsapp_call_end() == 'WhatsApp call kaat di.'
+    assert tried == ['ui'], tried
+
+
+def test_unproven_absent_after_click_is_not_success(monkeypatch):
+    monkeypatch.setattr(c, '_wa_focus_call_window', lambda: None)
+    monkeypatch.setattr(c, '_wa_call_state_note', lambda **kw: ('absent', 'after click'))
+    monkeypatch.setattr(c, '_wa_call_absence_proven', lambda: (False, 'window still there'))
+    monkeypatch.setattr(c, '_wa_click_end_call_button_ui', lambda: 'uia invoke End call')
+    result = c.whatsapp_call_end()
+    assert 'kaat di' not in result, result
+    assert 'call state verify nahi hua' in result, result
 
 
 def test_unknown_after_click_is_failure(monkeypatch):
@@ -173,3 +219,117 @@ def test_failed_duplicate_end_control_is_not_retried(monkeypatch):
     _install_uia(monkeypatch, els + [good])
     assert c._wa_click_end_call_button_ui()
     assert calls == ['failed invoke', 'failed click_input', ('invoke', 'other')]
+
+
+# ---- POSITIVE PROOF for "no call" (one WhatsApp chat window, no call UI, no End button) ----
+
+def _visible_window(title='WhatsApp', rect=(0, 0, 1000, 800), elements=(), chat_ui=True):
+    """Main chat window: a composer (Edit in the bottom band) unless chat_ui=False."""
+    els = list(elements)
+    if chat_ui:
+        els.append(_FakeEl('composer', 'Type a message', 'Edit', (300, 700, 900, 760)))
+    win = _FakeUIAWindow(els, rect=rect)
+    win.window_text = lambda: title
+    return (195, title, rect, win)
+
+
+def test_absence_proof_needs_exactly_one_visible_window_and_no_end_button(monkeypatch):
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: [_visible_window()])
+    assert c._wa_call_absence_proven()[0] is True
+
+
+def test_absence_proof_fails_without_any_window(monkeypatch):
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: [])
+    ok, detail = c._wa_call_absence_proven()
+    assert ok is False and 'nahi mili' in detail, detail
+
+
+def test_absence_proof_fails_when_window_list_unreadable(monkeypatch):
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: None)
+    assert c._wa_call_absence_proven()[0] is False
+
+
+def test_absence_proof_fails_when_end_button_is_in_uia(monkeypatch):
+    end = _FakeEl('end', 'End call', 'Button', (500, 700, 550, 750))
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: [_visible_window(elements=[end])])
+    ok, detail = c._wa_call_absence_proven()
+    assert ok is False and 'End-call' in detail, detail
+
+
+def test_absence_proof_fails_with_a_second_visible_whatsapp_window(monkeypatch):
+    """A separate call window is still a call: never 'no call' then."""
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: [
+        _visible_window(), _visible_window(rect=(1100, 0, 1900, 900))])
+    assert c._wa_call_absence_proven()[0] is False
+
+
+def test_absence_proof_fails_when_call_window_has_another_title(monkeypatch):
+    """Call window titled with the contact's name (same WhatsApp process) still counts."""
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: [
+        _visible_window(), _visible_window(title='Pinkesh', rect=(1100, 0, 1900, 900), chat_ui=False)])
+    assert c._wa_call_absence_proven()[0] is False
+
+
+def test_absence_proof_fails_for_call_titled_window(monkeypatch):
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: [_visible_window(title='WhatsApp Call')])
+    assert c._wa_call_absence_proven()[0] is False
+
+
+def test_absence_proof_fails_when_only_a_call_screen_is_visible(monkeypatch):
+    """One visible window but no chat box in it: that is a call screen, not the chat."""
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: [_visible_window(title='WhatsApp', chat_ui=False)])
+    ok, detail = c._wa_call_absence_proven()
+    assert ok is False and 'chat box' in detail, detail
+
+
+def test_absence_proof_ignores_minimized_sentinel_window(monkeypatch):
+    hidden = _visible_window(rect=(-32000, -32000, -31763, -31961))
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: [hidden, _visible_window()])
+    assert c._wa_call_absence_proven()[0] is True
+
+
+def test_absence_proof_fails_when_uia_tree_unreadable(monkeypatch):
+    win = _visible_window()[3]
+    win.descendants = lambda: (_ for _ in ()).throw(RuntimeError('UIA provider disconnected'))
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: [(195, 'WhatsApp', (0, 0, 1000, 800), win)])
+    assert c._wa_call_absence_proven()[0] is False
+
+
+def test_app_windows_collects_whatsapp_by_process_or_title(monkeypatch):
+    """Owner process name OR title says WhatsApp; other apps are ignored."""
+    names = {1: 'WhatsApp.Root.exe', 2: 'explorer.exe', 3: 'ApplicationFrameHost.exe'}
+
+    class _Win:
+        def __init__(self, pid, title):
+            self._pid, self._title = pid, title
+            self.rectangle = lambda: _FakeRect(0, 0, 1000, 800)
+
+        def window_text(self):
+            return self._title
+
+        def process_id(self):
+            return self._pid
+
+    wins = [_Win(1, 'Pinkesh'), _Win(2, 'Notepad'), _Win(3, 'WhatsApp')]
+    desktop = SimpleNamespace(windows=lambda visible_only: wins)
+    monkeypatch.setitem(sys.modules, 'ui_agent', SimpleNamespace(
+        IS_WIN=True, _Desktop=lambda backend: desktop, _get_pwa=lambda: None))
+    monkeypatch.setitem(sys.modules, 'psutil', SimpleNamespace(
+        Process=lambda pid: SimpleNamespace(name=lambda: names[pid])))
+    found = [item[1] for item in c._wa_app_windows()]
+    assert found == ['Pinkesh', 'WhatsApp'], found
+
+
+def test_app_windows_unreadable_is_none_not_empty(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'ui_agent', SimpleNamespace(IS_WIN=False))
+    assert c._wa_app_windows() is None
+
+
+def test_end_flow_is_safe_without_any_uia_window(monkeypatch):
+    """Real code path on Linux: no UIA window, OCR 'absent' -> honest verify message, no click."""
+    monkeypatch.setattr(c, '_wa_focus_call_window', lambda: None)
+    monkeypatch.setattr(c, '_wa_call_state_note', lambda **kw: ('absent', 'no call-screen text'))
+    monkeypatch.setattr(c, '_wa_app_windows', lambda: None)
+    monkeypatch.setattr(c, '_wa_uia_window', lambda: None)
+    result = c.whatsapp_call_end()
+    assert 'call state verify nahi hua' in result and 'kaatne ko kuch nahi' not in result, result

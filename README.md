@@ -324,6 +324,11 @@ Voice registration is handled by `voice_id.py`, which stores the local reference
 Calls are confirmation-gated: NOVA asks before dialing, and agent mode never
 auto-dials a call.
 
+By-name WhatsApp messages and calls act only after the open chat's header
+exactly matches the contact name. If the search box, the header or the send
+cannot be verified, NOVA does not press Enter or click and says so. See
+`docs/WHATSAPP_HARDENING.md`.
+
 ## Installation
 
 NOVA is primarily intended for Windows 10 and Windows 11.

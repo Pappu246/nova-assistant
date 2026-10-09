@@ -369,10 +369,11 @@ def x_call_honest_fail():
     import verifier
     orig = (c._wa_open_chat_and_run, c._wa_focus_call_window, c._wa_click_call_button_ui,
             c._wa_click_call_button_vision, c._wa_call_fallback_xy,
-            c._wa_call_already_active, c._wa_call_state_note)
+            c._wa_call_already_active, c._wa_call_state_note, c._wa_chat_header_check)
     try:
         c._wa_open_chat_and_run = lambda name, after_open=None, wait_load=12: after_open(None, None, "test")
         c._wa_focus_call_window = lambda: ""
+        c._wa_chat_header_check = lambda target, window=None: (True, "qa stub header")
         c._wa_call_already_active = lambda video=False: False
         c._wa_click_call_button_ui = lambda video=False: "uia invoke 'Voice call'"
         c._wa_click_call_button_vision = lambda video=False: None
@@ -381,7 +382,7 @@ def x_call_honest_fail():
         c._wa_call_state_note = lambda video=False, wait=None: ("absent", "no call-screen text")
         r = str(c.whatsapp_call({"contact": "QA Test"}))
         assert "laga diya" not in r, "jhoothi success bol diya: " + r
-        assert "fail" in r.lower() and "calling screen nahi aayi" in r, r
+        assert "fail" in r.lower() and "verify nahi hua" in r, r
         ok, _ = verifier.verify({"tool": "whatsapp_call"}, r)
         assert not ok, "verifier failure nahi pehchana"
         # 2) OCR hi unavailable -> alag honest message
@@ -395,7 +396,7 @@ def x_call_honest_fail():
     finally:
         (c._wa_open_chat_and_run, c._wa_focus_call_window, c._wa_click_call_button_ui,
          c._wa_click_call_button_vision, c._wa_call_fallback_xy,
-         c._wa_call_already_active, c._wa_call_state_note) = orig
+         c._wa_call_already_active, c._wa_call_state_note, c._wa_chat_header_check) = orig
     return "verify-gated success + honest fail ok"
 
 
@@ -530,6 +531,101 @@ def x_barge_tuning():
     return "400ms / 5 frames; echo gates preserved"
 
 
+def x_wa_name_verify():
+    """Name path: no Esc, search verified before Enter, header must match EXACTLY."""
+    import io
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    import comms_agent as c
+    import verifier
+    assert c._wa_name_matches("Pinkesh", "  PINKESH\u200e ")
+    assert not c._wa_name_matches("Pinkesh", "Pinkesh Sharma")
+    assert c._wa_name_matches("9876543210", "+91 98765 43210")
+    events, calls = [], []
+
+    class _PG:
+        PAUSE, FAILSAFE = 0.1, True
+
+        def hotkey(self, *keys):
+            events.append(("hotkey", keys))
+
+        def press(self, key):
+            events.append(("press", key))
+
+    class _Clip:
+        def copy(self, text):
+            events.append(("copy", str(text)))
+
+    class _GW:
+        def getWindowsWithTitle(self, title):
+            return [SimpleNamespace(title="WhatsApp", visible=True, _hWnd=197)]
+
+    with patch.dict(sys.modules, {"pyautogui": _PG(), "pyperclip": _Clip(), "pygetwindow": _GW()}), \
+            patch.object(c, "_wa_desktop_installed", return_value=True), \
+            patch.object(c, "_wa_activate", return_value=True), \
+            patch.object(c, "_wa_screen_click_allowed", return_value=True), \
+            patch.object(c, "_wa_wait_search_box", return_value=True), \
+            patch.object(c, "_wa_wait_chat_header", return_value=(False, "header=Ravi")), \
+            patch.object(c.time, "sleep", lambda *_: None):
+        ok, note, state = c._wa_unpack_result(c._wa_open_chat_and_run(
+            "Pinkesh", after_open=lambda *a: calls.append(a) or (True, "x")))
+    assert ok is False and state == c.WA_CHAT_HEADER_UNVERIFIED and not calls, (ok, state)
+    assert ("hotkey", ("esc",)) not in events, "Esc must never be pressed"
+    assert events.count(("press", "enter")) == 1, "only the chat-open Enter, never a send"
+    with patch.object(c, "_wa_send_by_name", return_value=(False, c._WA_NOTE_SEND_UNVERIFIED)), \
+            patch.object(c, "_resolve_contact", return_value=("", "")):
+        r = str(c.whatsapp_send({"contact": "Pinkesh", "message": "hello"}))
+    assert "bhej diya" not in r and verifier.verify({"tool": "whatsapp_send"}, r)[0] is False, r
+    with patch.object(c, "_wa_send_by_name", return_value=(True, "desktop")), \
+            patch.object(c, "_resolve_contact", return_value=("", "")):
+        r2 = str(c.whatsapp_send({"contact": "Pinkesh", "message": "hello"}))
+    assert "bhej diya" in r2 and verifier.verify({"tool": "whatsapp_send"}, r2)[0] is True, r2
+    return "no Esc; Enter only after verified header; 'bhej diya' only when verified"
+
+
+def x_wa_call_end_proof():
+    """'Koi call nahi' only with positive proof; otherwise UIA End button or honest verify msg."""
+    from unittest.mock import patch
+    import comms_agent as c
+    with patch.object(c, "_wa_focus_call_window", return_value=""), \
+            patch.object(c, "_wa_call_state_note", return_value=(c.WA_CALL_ABSENT, "no call-screen text")), \
+            patch.object(c, "_wa_uia_window_candidates", return_value=[]), \
+            patch.object(c, "_wa_uia_window", return_value=None), \
+            patch.object(c, "_wa_click_end_call_button_ui", new=lambda: None), \
+            patch.object(c.time, "sleep", lambda *_: None):
+        assert c._wa_call_absence_proven()[0] is False
+        r = c.whatsapp_call_end()
+    assert "call state verify nahi hua" in r and "koi WhatsApp call" not in r, r
+    return "absent without proof -> verify msg, never 'no call'"
+
+
+def x_wa_ocr_clamp_and_probe_encoding():
+    """Off-screen windows are clamped (not rejected), crop width is right, probe survives cp1252."""
+    import io
+    import comms_agent as c
+    import vision_control as vc
+    assert c._wa_visible_rect((-8, -8, 992, 792)) == (0, 0, 992, 792)
+    assert c._wa_visible_rect((-32000, -32000, -31763, -31961)) is None
+    class _PG:
+        def size(self):
+            return (1920, 1080)
+    orig = vc._pag
+    vc._pag = _PG()
+    try:
+        vc._pag.screenshot = lambda region=None: region
+        assert vc._clamp_capture((-8, -8, 1000, 800))[0] == (0, 0, 992, 792)
+    finally:
+        vc._pag = orig
+    buf = io.BytesIO()
+    stream = io.TextIOWrapper(buf, encoding="cp1252", errors="strict", write_through=True)
+    from unittest.mock import patch
+    with patch.object(sys, "stdout", stream):
+        c._wa_print("contact=%r" % "\u4e2d\u6587")
+    stream.flush()
+    assert b"\\u4e2d" in buf.getvalue(), buf.getvalue()
+    return "clamp keeps visible part; crop width fixed; cp1252-safe print"
+
+
 def main():
     print("=" * 62)
     print("  NOVA QA REPORT - Phases 1-6 (code-level tests)")
@@ -573,6 +669,9 @@ def main():
         ("Call Fix", "window + OCR leakage", x_wa_window_ocr_guard, False),
         ("Call Fix", "dedup + foreground/DPI guards", x_wa_window_hardening, False),
         ("Call End", "safe tool wiring", x_wa_end_wiring, False),
+        ("Name Verify", "no Esc; header-gated send", x_wa_name_verify, False),
+        ("Call End", "absent needs proof", x_wa_call_end_proof, False),
+        ("OCR", "clamp + crop; cp1252 probe", x_wa_ocr_clamp_and_probe_encoding, False),
         ("Barge-in", "echo tuning", x_barge_tuning, False),
         ("Wiring", "pytest suite", x_existing_tests, False),
     ]
