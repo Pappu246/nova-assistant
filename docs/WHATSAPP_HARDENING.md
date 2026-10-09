@@ -52,6 +52,52 @@ agent safeguard, successful-only dedup, pending TTL, planner rules, crash/segfau
 fixes and barge-in tuning are unchanged. Shared chat opening also checks actual
 foreground before typing and guards its web-search screen coordinates.
 
+## Name-based chat verification
+
+Used by `whatsapp_send` (no phone number saved) and `whatsapp_call`. Both open the
+chat by name, so both must prove they are in the right chat first.
+
+- **Open:** Ctrl+F, then Ctrl+A and Backspace. The search box UIA value must be
+  empty before the name is pasted, and must equal the name before Enter. Any
+  miss returns without Enter, typing or clicks. Esc is no longer pressed: the
+  global Esc listeners in `bolo.py` and `rt_speak.py` would stop NOVA's speech.
+- **Header:** after Enter, the chat header must EXACTLY match the target (case and
+  whitespace normalised; no partial match). The UIA header band is checked
+  first, then OCR of the same band. A phone-number target compares the last 10
+  digits. Unknown counts as a mismatch.
+- **Message:** the header is checked again before Enter. Enter is pressed only
+  when the composer UIA text shows the message (when readable). The reply says
+  "bhej diya" only after the composer is empty again. If the composer cannot be
+  read, the reply says the send was not verified.
+- **Call start:** the header is checked before the click, and again after a call
+  hint is seen. A header that changed stops further clicks. "absent" after a click
+  means "not verified", never success.
+- **Call end:** OCR "absent" is not proof of "no call". "Koi call nahi" needs
+  positive proof: exactly one visible WhatsApp window (title or owner process
+  says WhatsApp, so a call window titled with the contact's name still counts),
+  not call-titled, showing the chat search or composer box, and with no strict
+  End-call control in its UIA tree. Without proof, only the UIA End button is
+  tried; if that is not possible the reply is "call state verify nahi hua".
+  Vision and coordinate clickers run only after a detected call.
+- **Auto-send:** name-based messages are sent by default after verification.
+  `auto_send: false` types the message and leaves Enter to the user.
+
+OCR regions: an off-screen or partly off-screen window is clamped to its visible
+part instead of skipped (a maximized Windows 10/11 window reports -8,-8). A
+fully minimized window (-32000) still gives no region. The custom OCR crop width
+is recomputed from the clamped edges, and a custom region that cannot be
+captured returns nothing instead of the full screen. The probe output is
+cp1252-safe, so piping it to a file no longer crashes.
+
+Limits (not verified on Windows): the search box, composer and header must
+expose readable UIA values or text in the header band. If they do not, NOVA
+blocks the action. Two contacts with the exact same name are not told apart: the
+first search result is opened, and the header check only confirms the title.
+The header band and layout constants assume the default WhatsApp Desktop layout.
+A call window whose title and owner process are both not WhatsApp cannot be seen
+by the "no call" proof; the call-recipient check on the Calls tab stays the final
+verification.
+
 ## Validation and fresh-process probes
 
 Offline tests replay the reported coordinates and duplicate wrappers. Native
@@ -79,6 +125,16 @@ py -3.14 comms_agent.py --end-call-probe
 ```
 
 Probes may focus the window and read the screen but never click call controls.
+
+Chat-open verification, read-only (focuses the window; never types or clicks):
+
+```powershell
+py -3.14 comms_agent.py --chat-probe
+```
+
+It prints the header names the verifier can see, whether the search box and
+composer UIA values are readable, and the header OCR lines. Review or redact
+names before sharing the output.
 Review/redact contact names and OCR text before sharing output.
 
 **Actual Windows live-call start/end success remains unverified.**

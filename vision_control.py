@@ -49,6 +49,26 @@ def _active_region():
     return None
 
 
+def _clamp_capture(bbox):
+    """(left, top, w, h) -> (img, offset_x, offset_y) clipped to the screen, or None.
+
+    The origin is clipped first, then the far edges to the screen size, and the
+    width/height are recomputed from the CLIPPED edges. A window at x=-8 keeps its
+    width minus 8 visible pixels (the old code kept the full width, too wide).
+    """
+    left, top, w, h = bbox
+    try:
+        sw, sh = _pag.size()
+    except Exception:
+        sw, sh = left + w, top + h
+    right, bottom = min(sw, left + w), min(sh, top + h)
+    left, top = max(0, left), max(0, top)
+    w, h = right - left, bottom - top
+    if w < 10 or h < 10:
+        return None
+    return _pag.screenshot(region=(left, top, w, h)), left, top
+
+
 def _ocr_screen(region_mode="active", region=None):
     """
     OCR screen/window. Returns list of (text, x, y, w, h) in SCREEN coords.
@@ -64,44 +84,18 @@ def _ocr_screen(region_mode="active", region=None):
         import numpy as np
 
         # Determine screenshot region
-        bbox = None
         if region_mode == "custom" and region is not None:
-            bbox = tuple(region)
-        elif region_mode == "active":
-            bbox = _active_region()
-        elif region_mode == "full":
-            bbox = None
-
-        # Capture
-        if bbox is not None:
-            left, top, w, h = bbox
-            # Clamp to screen
-            try:
-                sw, sh = _pag.size()
-                # Ensure within screen bounds
-                left = max(0, left)
-                top = max(0, top)
-                w = min(w, sw - left)
-                h = min(h, sh - top)
-                if w < 10 or h < 10:
-                    bbox = None
-                else:
-                    img = _pag.screenshot(region=(left, top, w, h))
-                    offset_x, offset_y = left, top
-                if bbox is None:
-                    img = _pag.screenshot()
-                    offset_x, offset_y = 0, 0
-                else:
-                    # Already captured with bbox above
-                    if 'img' not in locals():
-                        img = _pag.screenshot(region=(left, top, w, h))
-                        offset_x, offset_y = left, top
-            except Exception:
-                img = _pag.screenshot(region=bbox) if bbox else _pag.screenshot()
-                offset_x, offset_y = (bbox[0], bbox[1]) if bbox else (0, 0)
+            # Custom region is honoured or nothing: a bad region never falls back to
+            # the full screen (another app's text would be read as WhatsApp's).
+            capture = _clamp_capture(tuple(region))
+            if capture is None:
+                return []
         else:
-            img = _pag.screenshot()
-            offset_x, offset_y = 0, 0
+            bbox = _active_region() if region_mode == "active" else None
+            capture = _clamp_capture(bbox) if bbox is not None else None
+            if capture is None:
+                capture = (_pag.screenshot(), 0, 0)
+        img, offset_x, offset_y = capture
 
         arr = np.array(img)
         result, _ = _OCR(arr)

@@ -207,15 +207,16 @@ def focus_window(title):
             if is_min:
                 try:
                     w.restore()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print("[app_control] focus restore fail:", str(e)[:60])
             w.activate()
-        except Exception:
+        except Exception as e:
+            print("[app_control] focus activate fail, minimize/restore fallback:", str(e)[:60])
             try:
                 w.minimize()
                 w.restore()
-            except Exception:
-                pass
+            except Exception as e2:
+                print("[app_control] focus minimize/restore fail:", str(e2)[:60])
         return title + " focus kar diya."
     except Exception as e:
         return "Focus fail: " + str(e)[:60]
