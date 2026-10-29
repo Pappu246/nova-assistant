@@ -38,6 +38,13 @@ def test_bad_parse_returns_none():
     assert reminders._parse_time("kabhi bhi nahi") is None
 
 
+def test_invalid_hour_time_returns_none_and_handles_gracefully():
+    assert reminders._parse_time("25 baje") is None
+    assert reminders._parse_time("25:00") is None
+    r = reminders.add_reminder("test", "25 baje")
+    assert "samajh nahi aaya" in r.lower()
+
+
 def test_add_reminder_bad_time_asks():
     r = reminders.add_reminder("test", "ajib samay")
     assert "samajh nahi aaya" in r.lower()
