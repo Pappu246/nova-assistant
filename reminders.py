@@ -74,6 +74,8 @@ def _parse_time(when_text):
             h = 0
         elif "baje" in t and h < 12 and now.hour >= 12:
             h += 12
+        if not (0 <= h <= 23 and 0 <= mn <= 59):
+            return None
         target = now.replace(hour=h, minute=mn, second=0, microsecond=0)
         if target < now:
             target += datetime.timedelta(days=1)
